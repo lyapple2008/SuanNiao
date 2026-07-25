@@ -1,0 +1,23 @@
+diff --git a/Scripts/embed-runner-icon.sh b/Scripts/embed-runner-icon.sh
+--- a/Scripts/embed-runner-icon.sh
++++ b/Scripts/embed-runner-icon.sh
+@@ -68,6 +68,19 @@ if [ -d "$RUNNER_APP/_CodeSignature" ]; then
+     # only when an Authority line exists, i.e. on every real-device build.
+     SIGN_INFO=$(codesign -dvv "$RUNNER_APP" 2>&1 || true)
+     EXISTING_IDENT="${EXPANDED_CODE_SIGN_IDENTITY:-}"
++    # A keychain may contain multiple certificates with the same Authority
++    # name. Prefer the exact certificate embedded in the provisioning profile
++    # so `codesign` receives an unambiguous SHA-1 identity.
++    if [ -z "$EXISTING_IDENT" ] && [ -f "$RUNNER_APP/embedded.mobileprovision" ]; then
++        EXISTING_IDENT=$(
++            security cms -D -i "$RUNNER_APP/embedded.mobileprovision" 2>/dev/null \
++                | plutil -extract DeveloperCertificates.0 raw -o - - 2>/dev/null \
++                | base64 -D 2>/dev/null \
++                | shasum \
++                | awk '{print toupper($1)}' \
++                || true
++        )
++    fi
+     if [ -z "$EXISTING_IDENT" ]; then
+         EXISTING_IDENT=$(awk -F'=' '/^Authority/ {print $2; exit}' <<< "$SIGN_INFO")
+     fi

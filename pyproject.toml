@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "suanniao"
+version = "0.1.0"
+description = "Screenshot recognizer and automatic solver for the mobile bird-branch sorting game"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "Pillow>=10",
+  "scipy>=1.10",
+  "scikit-learn>=1.3",
+]
+
+[project.scripts]
+suanniao = "suanniao.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
