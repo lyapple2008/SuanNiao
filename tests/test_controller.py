@@ -73,6 +73,144 @@ class WdaControllerTests(unittest.TestCase):
         with self.assertRaises(WdaError):
             WdaController(base_url="127.0.0.1:8100")
 
+    def test_dismiss_interruption_uses_labelled_json_button_center(self) -> None:
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/window/rect":
+                return {"value": {"width": 390, "height": 844}}
+            if path == "/session/session-1/source?format=json":
+                return {
+                    "value": {
+                        "type": "XCUIElementTypeApplication",
+                        "children": [
+                            {
+                                "type": "XCUIElementTypeButton",
+                                "label": "Close Ad",
+                                "isEnabled": "true",
+                                "isVisible": "true",
+                                "rect": {
+                                    "x": 344,
+                                    "y": 42,
+                                    "width": 40,
+                                    "height": 40,
+                                },
+                            }
+                        ],
+                    }
+                }
+            if path == "/session/session-1/wda/tap/0":
+                return {"value": None}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            dismissed = controller.dismiss_interruption()
+
+        self.assertTrue(dismissed)
+        self.assertIn(
+            (
+                "POST",
+                "/session/session-1/wda/tap/0",
+                {"x": 364.0, "y": 62.0},
+            ),
+            requests,
+        )
+        self.assertFalse(any(path.endswith("/source") for _, path, _ in requests))
+
+    def test_dismiss_interruption_falls_back_to_xml_source(self) -> None:
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/window/rect":
+                return {"value": {"width": 390, "height": 844}}
+            if path.endswith("source?format=json"):
+                raise WdaError("JSON source is unavailable")
+            if path == "/session/session-1/source":
+                return {
+                    "value": (
+                        '<XCUIElementTypeApplication x="0" y="0" width="390" '
+                        'height="844"><XCUIElementTypeButton label="关闭按钮" '
+                        'x="330" y="70" width="44" height="44" enabled="true" '
+                        'visible="true"/></XCUIElementTypeApplication>'
+                    )
+                }
+            if path == "/session/session-1/wda/tap/0":
+                return {"value": None}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            dismissed = controller.dismiss_interruption()
+
+        self.assertTrue(dismissed)
+        self.assertIn(
+            (
+                "POST",
+                "/session/session-1/wda/tap/0",
+                {"x": 352.0, "y": 92.0},
+            ),
+            requests,
+        )
+
+    def test_dismiss_interruption_ignores_unrelated_or_disabled_buttons(self) -> None:
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/window/rect":
+                return {"value": {"width": 390, "height": 844}}
+            if path.endswith("source?format=json"):
+                return {
+                    "value": {
+                        "children": [
+                            {
+                                "type": "XCUIElementTypeButton",
+                                "label": "设置",
+                                "rect": {"x": 20, "y": 40, "width": 40, "height": 40},
+                            },
+                            {
+                                "type": "XCUIElementTypeButton",
+                                "label": "Close Ad",
+                                "isEnabled": " false ",
+                                "rect": {
+                                    "x": 330,
+                                    "y": 40,
+                                    "width": 40,
+                                    "height": 40,
+                                },
+                            },
+                        ]
+                    }
+                }
+            if path.endswith("/source"):
+                return {"value": '<XCUIElementTypeButton label="取消"/>'}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            dismissed = controller.dismiss_interruption()
+
+        self.assertFalse(dismissed)
+        self.assertFalse(any(method == "POST" for method, _, _ in requests))
+
 
 if __name__ == "__main__":
     unittest.main()

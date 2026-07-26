@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -14,6 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VisionTests(unittest.TestCase):
+    def test_game_board_check_allows_two_remaining_branches_on_one_side(self) -> None:
+        recognizer = BoardRecognizer()
+        screenshot = Image.new("RGB", (100, 200), "black")
+
+        with patch.object(
+            recognizer,
+            "_detect_branch_rows",
+            return_value={"left": [80, 120], "right": []},
+        ):
+            self.assertTrue(recognizer.has_game_board(screenshot))
+
+        with patch.object(
+            recognizer,
+            "_detect_branch_rows",
+            return_value={"left": [], "right": []},
+        ):
+            self.assertFalse(recognizer.has_game_board(screenshot))
+
     def test_reference_screenshot(self) -> None:
         result = BoardRecognizer().read(ROOT / "game.jpg")
 
@@ -100,6 +119,48 @@ class VisionTests(unittest.TestCase):
         )
 
         self.assertEqual(crop.getextrema(), ((155, 155), (215, 215), (240, 240)))
+
+    def test_bird_crop_boxes_shift_toward_screen_center(self) -> None:
+        left_box = BoardRecognizer._bird_crop_box(
+            100,
+            200,
+            "left",
+            1000,
+            2000,
+            has_outer_neighbor=True,
+        )
+        right_box = BoardRecognizer._bird_crop_box(
+            900,
+            200,
+            "right",
+            1000,
+            2000,
+            has_outer_neighbor=True,
+        )
+
+        self.assertGreater(left_box[0] + left_box[2], 2 * 100)
+        self.assertLess(right_box[0] + right_box[2], 2 * 900)
+
+    def test_screen_edge_crop_boxes_are_moved_fully_inside_image(self) -> None:
+        left_box = BoardRecognizer._bird_crop_box(
+            32,
+            200,
+            "left",
+            1000,
+            2000,
+            has_outer_neighbor=True,
+        )
+        right_box = BoardRecognizer._bird_crop_box(
+            968,
+            200,
+            "right",
+            1000,
+            2000,
+            has_outer_neighbor=True,
+        )
+
+        self.assertEqual(left_box[0], 0)
+        self.assertEqual(right_box[2], 1000)
 
     def test_capacity_targets_use_visual_cost_to_break_size_tie(self) -> None:
         recognizer = BoardRecognizer()

@@ -7,13 +7,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from PIL import Image
+
 from .controller import (
     AdbController,
     DeviceController,
     DeviceError,
     WdaController,
 )
-from .model import REMOVED, Branch
+from .model import REMOVED, Branch, Move
 from .solution_html import write_solution_animation
 from .solver import BeamSolver, SolveResult
 from .vision import BoardRecognizer, DetectedBranch, RecognitionError, RecognitionResult
@@ -103,7 +105,7 @@ def _create_run_directory(root: Path = Path(".ios/runs")) -> Path:
 
 
 def _save_play_screenshot(
-    screenshot,
+    screenshot: Image.Image,
     run_directory: Path,
     filename: str,
     extra_directory: str | None,
@@ -121,10 +123,11 @@ def _capture_game_board(
     args: argparse.Namespace,
     run_directory: Path,
     turn_name: str,
-) -> tuple[object, RecognitionResult]:
+) -> tuple[Image.Image, RecognitionResult]:
     deadline = time.monotonic() + args.interruption_timeout
     interruption_index = 0
     waiting = False
+    manual_prompted = False
 
     while True:
         screenshot = controller.capture_stable(
@@ -157,11 +160,12 @@ def _capture_game_board(
         dismissed = not args.dry_run and controller.dismiss_interruption()
         if dismissed:
             print("未检测到正常棋盘，找到关闭/跳过按钮，已自动点击。")
-        elif interruption_index == 1:
+        elif not manual_prompted:
             print(
                 "未检测到正常棋盘，也没有找到可用的关闭按钮。"
                 "请手动关闭广告窗口，程序会等待棋盘恢复。"
             )
+            manual_prompted = True
 
         if time.monotonic() >= deadline:
             raise RuntimeError(
@@ -180,10 +184,24 @@ def _click_point_for_contents(
     return round(sum(xs) / len(xs)), branch.branch_y - 2
 
 
+def _next_move_batch(moves: tuple[Move, ...], limit: int) -> tuple[Move, ...]:
+    """Stop a fast batch immediately after its first branch elimination."""
+
+    batch: list[Move] = []
+    for move in moves[:limit]:
+        batch.append(move)
+        if move.completes_branch:
+            break
+    return tuple(batch)
+
+
 def analyze(args: argparse.Namespace) -> int:
-    recognition = _recognizer(args).read(args.image, debug_dir=args.debug_dir)
-    debug_report = Path(args.debug_dir) / "index.html" if args.debug_dir else None
-    if debug_report and not args.json:
+    debug_directory = args.debug_dir or args.image.with_name(
+        f"{args.image.stem}-clusters"
+    )
+    recognition = _recognizer(args).read(args.image, debug_dir=debug_directory)
+    debug_report = debug_directory / "index.html"
+    if not args.json:
         print(f"debug_report={debug_report}")
     solution = _solver(args).solve(recognition.state)
     animation_path: Path | None = None
@@ -245,6 +263,12 @@ def play(args: argparse.Namespace) -> int:
         raise ValueError("--capture-interval must be positive")
     if args.capture_attempts < 2:
         raise ValueError("--capture-attempts must be at least 2")
+    if args.tap_gap < 0:
+        raise ValueError("--tap-gap must not be negative")
+    if args.move_wait < 0:
+        raise ValueError("--move-wait must not be negative")
+    if args.elimination_wait < 0:
+        raise ValueError("--elimination-wait must not be negative")
     if args.interruption_timeout <= 0:
         raise ValueError("--interruption-timeout must be positive")
     if args.interruption_poll_interval <= 0:
@@ -284,7 +308,7 @@ def play(args: argparse.Namespace) -> int:
             previous_key = key
 
             solution = solver.solve(recognition.state)
-            batch = solution.moves[: args.moves_per_plan]
+            batch = _next_move_batch(solution.moves, args.moves_per_plan)
             print(_format_solution(solution, len(batch)))
             if not solution.moves:
                 print("No improving move was found; stopping without making a random tap.")
@@ -376,7 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument(
         "--debug-dir",
         type=Path,
-        help="save branch detection, bird crops, and all clustering candidates",
+        help=(
+            "save branch detection, bird crops, and clustering candidates; "
+            "default: <image-stem>-clusters"
+        ),
     )
     analyze_parser.add_argument(
         "--html-output",

@@ -103,7 +103,11 @@ class BoardRecognizer:
             else Image.open(source).convert("RGB")
         )
         rows = self._detect_branch_rows(np.asarray(image))
-        return bool(rows["left"] and rows["right"] and sum(map(len, rows.values())) >= 4)
+        # Near the end of a level, all remaining branches can be on the same
+        # side. Two detected branch rows are enough to distinguish that valid
+        # late-game board from the branch-free interruption screens seen in
+        # ads and level overlays.
+        return sum(map(len, rows.values())) >= 2
 
     def read(
         self,
@@ -462,17 +466,22 @@ class BoardRecognizer:
         *,
         has_outer_neighbor: bool,
     ) -> tuple[int, int, int, int]:
-        # Packed birds overlap in the movable/outer direction. Shift crops a
-        # little toward the fixed/base end, preserving more of the current
-        # bird while excluding the neighbor drawn over it.
+        # The detected slot point sits slightly toward the screen edge relative
+        # to the most useful body region. Shift every crop toward the center of
+        # the screen. Packed birds still need a smaller counter-shift toward the
+        # fixed/base end so the outer neighbor does not dominate the crop.
         direction = 1 if side == "left" else -1
-        center_x = (
-            round(x - direction * 0.006 * width)
-            if has_outer_neighbor
-            else x
+        inward_shift = 0.006 * width
+        overlap_compensation = (
+            0.002 * width if has_outer_neighbor else 0.0
         )
+        center_x = round(x + direction * (inward_shift - overlap_compensation))
         half_width = round(0.040 * width)
         half_height = round(0.021 * height)
+        # The fixed/base slot is close to the screen edge. Clamp the center so
+        # the full crop remains inside the screenshot: left crops move right
+        # and right crops move left by the minimum additional amount required.
+        center_x = min(max(center_x, half_width), width - half_width - 1)
         return (
             center_x - half_width,
             y - half_height,

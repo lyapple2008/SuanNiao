@@ -339,8 +339,8 @@ class WdaController(StableCaptureMixin):
     def dismiss_interruption(self) -> bool:
         """Tap a clearly labelled close/skip control in the active iOS UI."""
 
-        session_id = self._ensure_session()
         try:
+            session_id = self._ensure_session()
             window_size = self._window_size()
         except WdaError:
             return False
@@ -356,7 +356,10 @@ class WdaController(StableCaptureMixin):
             point = _find_close_control(result.get("value"), window_size)
             if point is None:
                 continue
-            self._tap_viewport(*point)
+            try:
+                self._tap_viewport(*point)
+            except WdaError:
+                return False
             return True
         return False
 
@@ -377,15 +380,27 @@ class WdaController(StableCaptureMixin):
 _CLOSE_LABELS = {
     "close",
     "closead",
+    "adclose",
+    "closebutton",
+    "adclosebutton",
+    "closeadbutton",
     "closeadvertisement",
+    "closeadvertisementbutton",
     "dismiss",
     "dismissad",
+    "dismissbutton",
     "skip",
     "skipad",
+    "skipbutton",
+    "skipadbutton",
     "skipadvertisement",
     "关闭",
     "关闭广告",
     "关闭此广告",
+    "关闭按钮",
+    "关闭广告按钮",
+    "关闭窗口",
+    "关闭页面",
     "跳过",
     "跳过广告",
 }
@@ -403,7 +418,7 @@ def _attribute_enabled(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     if isinstance(value, str):
-        return value.casefold() not in {"false", "0", "no"}
+        return value.strip().casefold() not in {"false", "0", "no"}
     return True
 
 
@@ -461,7 +476,15 @@ def _find_close_control(
     for node in _source_nodes(source):
         labels = {
             _normalize_label(node.get(key))
-            for key in ("label", "name", "value", "title", "rawIdentifier")
+            for key in (
+                "label",
+                "accessibilityLabel",
+                "name",
+                "value",
+                "title",
+                "identifier",
+                "rawIdentifier",
+            )
         }
         labels.discard("")
         if not labels.intersection(_CLOSE_LABELS):
@@ -488,7 +511,11 @@ def _find_close_control(
             continue
 
         element_type = _normalize_label(node.get("type"))
-        score = 20.0 if element_type in {"button", "image", "link"} else 0.0
+        score = (
+            20.0
+            if element_type.endswith(("button", "image", "link"))
+            else 0.0
+        )
         if center[0] >= screen_width * 0.55:
             score += 4.0
         if center[1] <= screen_height * 0.35:
