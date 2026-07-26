@@ -4,6 +4,9 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 from suanniao.vision import BoardRecognizer
 
 
@@ -35,10 +38,18 @@ class VisionTests(unittest.TestCase):
             self.assertTrue((debug_dir / "01-detection.png").is_file())
             self.assertTrue((debug_dir / "clusters-k09.png").is_file())
             self.assertEqual(len(list((debug_dir / "birds").glob("bird-*.png"))), 64)
+            self.assertEqual(
+                len(list((debug_dir / "feature-masks").glob("bird-*.png"))),
+                64,
+            )
             report = json.loads((debug_dir / "report.json").read_text())
             self.assertEqual(report["detected_birds"], 64)
             self.assertEqual(
                 report["clustering_algorithm"], "capacity-constrained-kmeans"
+            )
+            self.assertEqual(
+                report["occupancy_constraint"],
+                "prefix-per-branch,total-multiple-of-capacity",
             )
             self.assertEqual(report["candidates"][0]["type_count"], 9)
             self.assertTrue(
@@ -49,6 +60,57 @@ class VisionTests(unittest.TestCase):
             )
             self.assertTrue(report["candidates"][0]["valid"])
             self.assertTrue(all(size % 4 == 0 for size in result.cluster_sizes))
+
+    def test_global_occupancy_constraint_removes_marginal_extra_bird(self) -> None:
+        recognizer = BoardRecognizer(presence_threshold=0.20)
+
+        occupancies = recognizer._select_occupancies(
+            (
+                (0.8, 0.8, 0.8, 0.8),
+                (0.201, 0.1, 0.1, 0.1),
+            )
+        )
+
+        self.assertEqual(occupancies, (4, 0))
+
+    def test_presence_evidence_rejects_thin_wood_strip(self) -> None:
+        rgb = np.full((1478, 680, 3), (155, 215, 240), dtype=np.uint8)
+        x, y = 50, 600
+        rgb[y - 32 : y - 24, x - 20 : x + 20] = (125, 65, 30)
+
+        evidence = BoardRecognizer()._presence_evidence(rgb, x, y)
+
+        self.assertLess(evidence.score, 0.20)
+        self.assertGreater(evidence.foreground_fraction, evidence.bird_fraction)
+
+    def test_edge_crop_uses_background_instead_of_black_padding(self) -> None:
+        color = (155, 215, 240)
+        image = Image.new("RGB", (100, 200), color)
+        background = np.asarray(color, dtype=float) / 255.0
+
+        crop = BoardRecognizer._bird_crop(
+            image,
+            0,
+            80,
+            "left",
+            image.width,
+            image.height,
+            background,
+            has_outer_neighbor=False,
+        )
+
+        self.assertEqual(crop.getextrema(), ((155, 155), (215, 215), (240, 240)))
+
+    def test_capacity_targets_use_visual_cost_to_break_size_tie(self) -> None:
+        recognizer = BoardRecognizer()
+        matrix = np.asarray([[0.0]] * 8 + [[10.0]] * 12)
+        centers = np.asarray([[0.0], [10.0]])
+
+        targets = recognizer._capacity_targets(matrix, centers, (6, 14))
+
+        # (4, 16) and (8, 12) change the raw sizes by the same amount, but
+        # the visual assignment clearly supports eight samples at center 0.
+        self.assertEqual(targets, (8, 12))
 
 
 if __name__ == "__main__":

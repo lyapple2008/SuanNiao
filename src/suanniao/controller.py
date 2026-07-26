@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import shutil
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -29,6 +31,8 @@ class WdaError(DeviceError):
 
 
 class DeviceController(Protocol):
+    def capture(self) -> Image.Image: ...
+
     def capture_stable(
         self,
         *,
@@ -38,6 +42,8 @@ class DeviceController(Protocol):
     ) -> Image.Image: ...
 
     def tap(self, x: int, y: int) -> None: ...
+
+    def dismiss_interruption(self) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -119,6 +125,9 @@ class AdbController(StableCaptureMixin):
         )
         if completed.returncode != 0:
             raise AdbError(f"ADB tap failed: {completed.stderr.strip()}")
+
+    def dismiss_interruption(self) -> bool:
+        return False
 
     def close(self) -> None:
         return None
@@ -277,16 +286,8 @@ class WdaController(StableCaptureMixin):
             raise last_error
         raise WdaError("WebDriverAgent did not return the iPhone window size")
 
-    def tap(self, x: int, y: int) -> None:
+    def _tap_viewport(self, tap_x: float, tap_y: float) -> None:
         session_id = self._ensure_session()
-        screen_width, screen_height = self._window_size()
-        if self._last_screenshot_size is None:
-            tap_x, tap_y = x, y
-        else:
-            image_width, image_height = self._last_screenshot_size
-            tap_x = round(x * screen_width / image_width)
-            tap_y = round(y * screen_height / image_height)
-
         tap_payload = {"x": tap_x, "y": tap_y}
         try:
             self._request_json(
@@ -325,6 +326,40 @@ class WdaController(StableCaptureMixin):
         except WdaError:
             self._request_json("POST", "/wda/tap/0", tap_payload)
 
+    def tap(self, x: int, y: int) -> None:
+        screen_width, screen_height = self._window_size()
+        if self._last_screenshot_size is None:
+            tap_x, tap_y = x, y
+        else:
+            image_width, image_height = self._last_screenshot_size
+            tap_x = round(x * screen_width / image_width)
+            tap_y = round(y * screen_height / image_height)
+        self._tap_viewport(tap_x, tap_y)
+
+    def dismiss_interruption(self) -> bool:
+        """Tap a clearly labelled close/skip control in the active iOS UI."""
+
+        session_id = self._ensure_session()
+        try:
+            window_size = self._window_size()
+        except WdaError:
+            return False
+
+        for path in (
+            f"/session/{session_id}/source?format=json",
+            f"/session/{session_id}/source",
+        ):
+            try:
+                result = self._request_json("GET", path)
+            except WdaError:
+                continue
+            point = _find_close_control(result.get("value"), window_size)
+            if point is None:
+                continue
+            self._tap_viewport(*point)
+            return True
+        return False
+
     def close(self) -> None:
         if not self.session_id or not self._owns_session:
             return
@@ -337,3 +372,131 @@ class WdaController(StableCaptureMixin):
             # Closing a best-effort automation session should not mask the
             # actual game result or a more useful earlier error.
             pass
+
+
+_CLOSE_LABELS = {
+    "close",
+    "closead",
+    "closeadvertisement",
+    "dismiss",
+    "dismissad",
+    "skip",
+    "skipad",
+    "skipadvertisement",
+    "关闭",
+    "关闭广告",
+    "关闭此广告",
+    "跳过",
+    "跳过广告",
+}
+
+
+def _normalize_label(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[\s_\-:：·.!！?？]+", "", value).casefold()
+
+
+def _attribute_enabled(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.casefold() not in {"false", "0", "no"}
+    return True
+
+
+def _rect_from_source_node(
+    node: dict[str, Any],
+) -> tuple[float, float, float, float] | None:
+    rect = node.get("rect")
+    if isinstance(rect, dict):
+        values = tuple(rect.get(key) for key in ("x", "y", "width", "height"))
+        if all(isinstance(value, (int, float)) for value in values):
+            return tuple(float(value) for value in values)  # type: ignore[return-value]
+
+    values = tuple(node.get(key) for key in ("x", "y", "width", "height"))
+    try:
+        if all(value is not None for value in values):
+            return tuple(float(value) for value in values)  # type: ignore[return-value]
+    except (TypeError, ValueError):
+        pass
+
+    frame = node.get("frame") or node.get("nativeFrame") or rect
+    if isinstance(frame, str):
+        numbers = re.findall(r"-?\d+(?:\.\d+)?", frame)
+        if len(numbers) >= 4:
+            return tuple(float(value) for value in numbers[:4])  # type: ignore[return-value]
+    return None
+
+
+def _source_nodes(source: Any) -> list[dict[str, Any]]:
+    if isinstance(source, dict):
+        nodes = [source]
+        for value in source.values():
+            if isinstance(value, (dict, list)):
+                nodes.extend(_source_nodes(value))
+        return nodes
+    if isinstance(source, list):
+        nodes: list[dict[str, Any]] = []
+        for value in source:
+            nodes.extend(_source_nodes(value))
+        return nodes
+    if isinstance(source, str):
+        try:
+            root = ET.fromstring(source)
+        except ET.ParseError:
+            return []
+        return [{**element.attrib, "type": element.tag} for element in root.iter()]
+    return []
+
+
+def _find_close_control(
+    source: Any,
+    window_size: tuple[float, float],
+) -> tuple[float, float] | None:
+    screen_width, screen_height = window_size
+    candidates: list[tuple[float, tuple[float, float]]] = []
+    for node in _source_nodes(source):
+        labels = {
+            _normalize_label(node.get(key))
+            for key in ("label", "name", "value", "title", "rawIdentifier")
+        }
+        labels.discard("")
+        if not labels.intersection(_CLOSE_LABELS):
+            continue
+        if not _attribute_enabled(
+            node.get("enabled", node.get("isEnabled", node.get("wdEnabled", True)))
+        ):
+            continue
+        if not _attribute_enabled(
+            node.get("visible", node.get("isVisible", node.get("wdVisible", True)))
+        ):
+            continue
+
+        rect = _rect_from_source_node(node)
+        if rect is None:
+            continue
+        x, y, width, height = rect
+        center = x + width / 2, y + height / 2
+        if width <= 0 or height <= 0:
+            continue
+        if not (0 <= center[0] <= screen_width and 0 <= center[1] <= screen_height):
+            continue
+        if width > screen_width * 0.55 or height > screen_height * 0.22:
+            continue
+
+        element_type = _normalize_label(node.get("type"))
+        score = 20.0 if element_type in {"button", "image", "link"} else 0.0
+        if center[0] >= screen_width * 0.55:
+            score += 4.0
+        if center[1] <= screen_height * 0.35:
+            score += 3.0
+        score -= width * height / max(screen_width * screen_height, 1.0)
+        candidates.append((score, center))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]

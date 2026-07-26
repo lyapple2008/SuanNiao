@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .controller import (
@@ -12,9 +13,10 @@ from .controller import (
     DeviceError,
     WdaController,
 )
+from .model import REMOVED, Branch
 from .solution_html import write_solution_animation
 from .solver import BeamSolver, SolveResult
-from .vision import BoardRecognizer, RecognitionError, RecognitionResult
+from .vision import BoardRecognizer, DetectedBranch, RecognitionError, RecognitionResult
 
 
 def _symbol(value: int) -> str:
@@ -86,6 +88,98 @@ def _controller(args: argparse.Namespace) -> DeviceController:
     return AdbController(args.adb, args.serial)
 
 
+def _create_run_directory(root: Path = Path(".ios/runs")) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for index in range(1_000):
+        suffix = "" if index == 0 else f"-{index:02d}"
+        candidate = root / f"run-{timestamp}{suffix}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise RuntimeError(f"Could not create a unique run directory under {root}")
+
+
+def _save_play_screenshot(
+    screenshot,
+    run_directory: Path,
+    filename: str,
+    extra_directory: str | None,
+) -> None:
+    screenshot.save(run_directory / filename)
+    if extra_directory:
+        directory = Path(extra_directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        screenshot.save(directory / filename)
+
+
+def _capture_game_board(
+    controller: DeviceController,
+    recognizer: BoardRecognizer,
+    args: argparse.Namespace,
+    run_directory: Path,
+    turn_name: str,
+) -> tuple[object, RecognitionResult]:
+    deadline = time.monotonic() + args.interruption_timeout
+    interruption_index = 0
+    waiting = False
+
+    while True:
+        screenshot = controller.capture_stable(
+            interval=args.capture_interval,
+            attempts=args.capture_attempts,
+        )
+        if recognizer.has_game_board(screenshot):
+            _save_play_screenshot(
+                screenshot,
+                run_directory,
+                f"{turn_name}.png",
+                args.save_frames,
+            )
+            recognition = recognizer.read(
+                screenshot,
+                debug_dir=run_directory / f"{turn_name}-clusters",
+            )
+            if waiting:
+                print("已重新检测到游戏棋盘，继续操作。")
+            return screenshot, recognition
+
+        waiting = True
+        interruption_index += 1
+        _save_play_screenshot(
+            screenshot,
+            run_directory,
+            f"{turn_name}-interruption-{interruption_index:03d}.png",
+            args.save_frames,
+        )
+        dismissed = not args.dry_run and controller.dismiss_interruption()
+        if dismissed:
+            print("未检测到正常棋盘，找到关闭/跳过按钮，已自动点击。")
+        elif interruption_index == 1:
+            print(
+                "未检测到正常棋盘，也没有找到可用的关闭按钮。"
+                "请手动关闭广告窗口，程序会等待棋盘恢复。"
+            )
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"等待游戏棋盘恢复超时（{args.interruption_timeout:g} 秒）"
+            )
+        time.sleep(args.interruption_poll_interval)
+
+
+def _click_point_for_contents(
+    branch: DetectedBranch,
+    contents: Branch,
+) -> tuple[int, int]:
+    if contents and contents != REMOVED:
+        return branch.slots[len(contents) - 1]
+    xs = [point[0] for point in branch.slots]
+    return round(sum(xs) / len(xs)), branch.branch_y - 2
+
+
 def analyze(args: argparse.Namespace) -> int:
     recognition = _recognizer(args).read(args.image, debug_dir=args.debug_dir)
     debug_report = Path(args.debug_dir) / "index.html" if args.debug_dir else None
@@ -145,21 +239,35 @@ def analyze(args: argparse.Namespace) -> int:
 
 
 def play(args: argparse.Namespace) -> int:
+    if args.moves_per_plan < 1:
+        raise ValueError("--moves-per-plan must be positive")
+    if args.capture_interval <= 0:
+        raise ValueError("--capture-interval must be positive")
+    if args.capture_attempts < 2:
+        raise ValueError("--capture-attempts must be at least 2")
+    if args.interruption_timeout <= 0:
+        raise ValueError("--interruption-timeout must be positive")
+    if args.interruption_poll_interval <= 0:
+        raise ValueError("--interruption-poll-interval must be positive")
+
     controller = _controller(args)
     recognizer = _recognizer(args)
     solver = _solver(args)
+    run_directory = _create_run_directory()
+    print(f"run_debug_dir={run_directory}")
     previous_key: tuple[tuple[int, ...], ...] | None = None
     unchanged = 0
 
     try:
         for turn in range(1, args.max_turns + 1):
-            screenshot = controller.capture_stable()
-            if args.save_frames:
-                directory = Path(args.save_frames)
-                directory.mkdir(parents=True, exist_ok=True)
-                screenshot.save(directory / f"turn-{turn:03d}.png")
-
-            recognition = recognizer.read(screenshot)
+            turn_name = f"turn-{turn:03d}"
+            _screenshot, recognition = _capture_game_board(
+                controller,
+                recognizer,
+                args,
+                run_directory,
+                turn_name,
+            )
             print(f"\nTurn {turn}")
             print(_format_board(recognition))
             if recognition.state.is_finished:
@@ -176,21 +284,62 @@ def play(args: argparse.Namespace) -> int:
             previous_key = key
 
             solution = solver.solve(recognition.state)
-            print(_format_solution(solution, 1))
+            batch = solution.moves[: args.moves_per_plan]
+            print(_format_solution(solution, len(batch)))
             if not solution.moves:
                 print("No improving move was found; stopping without making a random tap.")
                 return 2
 
-            move = solution.moves[0]
-            source = recognition.branches[move.source].click_point()
-            destination = recognition.branches[move.destination].click_point()
-            print(f"tap {source} -> {destination}")
             if args.dry_run:
+                for number, move in enumerate(batch, 1):
+                    print(
+                        f"dry-run {number}: #{move.source:02d} -> "
+                        f"#{move.destination:02d}"
+                    )
                 return 0
-            controller.tap(*source)
-            time.sleep(args.tap_gap)
-            controller.tap(*destination)
-            time.sleep(args.move_wait)
+
+            virtual_state = recognition.state
+            interrupted = False
+            for batch_index, move in enumerate(batch):
+                if batch_index:
+                    quick_screen = controller.capture()
+                    if not recognizer.has_game_board(quick_screen):
+                        _save_play_screenshot(
+                            quick_screen,
+                            run_directory,
+                            f"{turn_name}-mid-batch-interruption.png",
+                            args.save_frames,
+                        )
+                        print("批量操作中检测到非棋盘画面，暂停当前方案。")
+                        interrupted = True
+                        break
+
+                source = _click_point_for_contents(
+                    recognition.branches[move.source],
+                    virtual_state.branches[move.source],
+                )
+                destination = _click_point_for_contents(
+                    recognition.branches[move.destination],
+                    virtual_state.branches[move.destination],
+                )
+                print(
+                    f"batch {batch_index + 1}/{len(batch)}: "
+                    f"tap {source} -> {destination}"
+                )
+                controller.tap(*source)
+                time.sleep(args.tap_gap)
+                controller.tap(*destination)
+                virtual_state = virtual_state.apply(move)
+                time.sleep(
+                    args.elimination_wait if move.completes_branch else args.move_wait
+                )
+
+            if interrupted:
+                previous_key = None
+                unchanged = 0
+            elif virtual_state.is_finished:
+                print("Planned moves eliminated all remaining birds: game finished.")
+                return 0
 
         print(f"Stopped after --max-turns={args.max_turns}.")
         return 2
@@ -269,12 +418,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--wda-session-id",
         help="reuse an existing WebDriverAgent session instead of creating one",
     )
-    play_parser.add_argument("--tap-gap", type=float, default=0.15)
-    play_parser.add_argument("--move-wait", type=float, default=0.8)
+    play_parser.add_argument("--tap-gap", type=float, default=0.08)
+    play_parser.add_argument("--move-wait", type=float, default=0.40)
+    play_parser.add_argument(
+        "--elimination-wait",
+        type=float,
+        default=0.65,
+        help="wait after a move that eliminates a branch; default: 0.65",
+    )
+    play_parser.add_argument(
+        "--moves-per-plan",
+        type=int,
+        default=8,
+        help="execute this many planned moves before screenshot/replanning; default: 8",
+    )
+    play_parser.add_argument(
+        "--capture-interval",
+        type=float,
+        default=0.12,
+        help="stable screenshot comparison interval; default: 0.12",
+    )
+    play_parser.add_argument(
+        "--capture-attempts",
+        type=int,
+        default=5,
+        help="maximum stable screenshot attempts; default: 5",
+    )
+    play_parser.add_argument(
+        "--interruption-timeout",
+        type=float,
+        default=300.0,
+        help="maximum seconds to wait for the game board after an interruption",
+    )
+    play_parser.add_argument(
+        "--interruption-poll-interval",
+        type=float,
+        default=0.8,
+        help="seconds between interruption recovery checks; default: 0.8",
+    )
     play_parser.add_argument("--max-turns", type=int, default=100)
     play_parser.add_argument("--save-frames")
     play_parser.add_argument("--dry-run", action="store_true")
-    play_parser.set_defaults(handler=play)
+    play_parser.set_defaults(handler=play, beam_width=500, time_limit=8.0)
     return parser
 
 

@@ -57,7 +57,7 @@ suanniao analyze .ios/debug-frames/turn-001.png \
 打开 `.ios/cluster-debug/index.html` 可以查看：
 
 - 树枝行、槽位坐标和鸟存在性判断；
-- 每只鸟经过方向归一化后的裁剪图；
+- 每只鸟经过方向归一化、遮挡方向修正后的裁剪图，以及实际使用的特征掩码；
 - 每个候选类型数 `k` 的普通 K-Means 数量、约束目标数量、最终分组和轮廓系数；
 - 自动聚类最终选择的候选结果。
 
@@ -121,6 +121,11 @@ scripts/ios/run.sh --dry-run
 scripts/ios/run.sh
 ```
 
+每次执行 `play` 都会自动新建 `.ios/runs/run-日期-时间/` 目录。每一回合会保存
+`turn-001.png` 原始截图，并在 `turn-001-clusters/` 中保存检测标注图、鸟裁剪、
+特征掩码、各候选聚类图片、`report.json` 和可视化 `index.html`，用于复盘识别与聚类结果。
+即使识别失败，已经生成的中间调试文件也会保留。
+
 如果已经使用其他方式启动了 WDA，仍然可以直接指定地址：
 
 ```bash
@@ -137,27 +142,9 @@ iPhone 截图通常使用 Retina 像素，而 WDA 点击使用逻辑点。程序
 - `--wda-url URL`：指定 iPhone 的 WebDriverAgent 地址；
 - `--wda-session-id ID`：复用已经创建的 WDA 会话；
 - `--move-wait 1.2`：设备动画较慢时增加等待时间；
-- `--ad-mode auto|wait|off`：广告处理方式，默认 `wait`，不检测或点击广告按钮，
-  只等待手动关闭并在棋盘恢复后继续。显式使用 `auto` 时，iPhone 才会检查
-  可访问性树中明确标记为“关闭广告/Close Ad/跳过广告/Skip Ad”等按钮；
-- `--ad-wait-timeout 300`：等待广告关闭的最长秒数；
-- `--ad-poll-interval 1`：等待期间重新检查画面的间隔秒数；
-- `--interaction-retries 2`：点击后棋盘连续不变多少次才进入广告等待；
-- `--save-frames frames`：保存每一步截图，方便排查；
+- `--save-frames frames`：在自动生成的运行目录之外，再额外复制每一步截图；
 - `--beam-width 5000`：扩大搜索宽度，提高困难关卡的解题质量；
 - `--time-limit 60`：允许单次规划使用更长时间。
-
-广告全屏遮挡导致棋盘无法识别时，程序会暂停并重复检查；广告只覆盖部分区域、
-但拦截点击时，程序会在棋盘连续不变后等待画面恢复。`auto` 模式无法可靠识别
-关闭按钮时不会猜测任意的“X”坐标，以免误点游戏自身的设置或微信胶囊按钮。
-手动关闭后，只要棋盘画面重新稳定，无需重启命令。当前默认关闭广告按钮检测，
-也可以显式指定：
-
-```bash
-scripts/ios/run.sh --ad-mode wait
-```
-
-`--dry-run` 始终不会点击广告或游戏。
 
 ## 当前适配范围
 

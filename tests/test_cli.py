@@ -1,122 +1,106 @@
+import tempfile
 import unittest
-from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
 
-from suanniao.cli import (
-    _wait_for_board,
-    _wait_for_interaction_recovery,
-    build_parser,
-)
-from suanniao.model import BoardState
-from suanniao.vision import RecognitionError
+from suanniao.cli import _create_run_directory, build_parser, play
+from suanniao.model import BoardState, Move
+from suanniao.solver import SolveResult
+from suanniao.vision import DetectedBranch, RecognitionResult
 
 
 class FakeController:
-    def __init__(self, screenshots, dismiss_results=()):
-        self.screenshots = list(screenshots)
-        self.dismiss_results = list(dismiss_results)
-        self.dismiss_calls = 0
+    def __init__(self) -> None:
+        self.closed = False
 
-    def capture_stable(self):
-        if len(self.screenshots) > 1:
-            return self.screenshots.pop(0)
-        return self.screenshots[0]
+    def capture_stable(self) -> Image.Image:
+        return Image.new("RGB", (100, 200), (120, 180, 220))
 
-    def dismiss_ad(self):
-        self.dismiss_calls += 1
-        if self.dismiss_results:
-            return self.dismiss_results.pop(0)
-        return False
+    def tap(self, _x: int, _y: int) -> None:
+        raise AssertionError("dry-run must not tap")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeRecognizer:
-    def __init__(self, results):
-        self.results = list(results)
+    def __init__(self, result: RecognitionResult) -> None:
+        self.result = result
+        self.debug_directories: list[Path] = []
 
-    def read(self, _screenshot):
-        result = self.results.pop(0)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-def recognition(branches=((0,),)):
-    return SimpleNamespace(state=BoardState(tuple(branches)))
+    def read(self, _screenshot: Image.Image, *, debug_dir: Path) -> RecognitionResult:
+        self.debug_directories.append(debug_dir)
+        return self.result
 
 
-class AdRecoveryTests(unittest.TestCase):
-    @patch("suanniao.cli.time.sleep", return_value=None)
-    def test_unrecognizable_ad_is_closed_then_board_resumes(self, _sleep) -> None:
-        ad = Image.new("RGB", (100, 200), "black")
-        board = Image.new("RGB", (100, 200), "white")
-        expected = recognition()
-        controller = FakeController([ad, board], dismiss_results=[True])
-        recognizer = FakeRecognizer([RecognitionError("no board"), expected])
+class FakeSolver:
+    def solve(self, _state: BoardState) -> SolveResult:
+        return SolveResult((Move(0, 1, 1),), 0, 1, 1, 0.0, False)
 
-        screenshot, result = _wait_for_board(
-            controller,
-            recognizer,
-            ad_mode="auto",
-            timeout=10,
-            poll_interval=0.01,
-            allow_dismiss=True,
-        )
 
-        self.assertIs(screenshot, board)
-        self.assertIs(result, expected)
-        self.assertEqual(controller.dismiss_calls, 1)
+def sample_recognition() -> RecognitionResult:
+    branches = (
+        DetectedBranch(
+            "left",
+            100,
+            90,
+            ((10, 90), (20, 90), (30, 90), (40, 90)),
+            (0,),
+        ),
+        DetectedBranch(
+            "right",
+            100,
+            90,
+            ((90, 90), (80, 90), (70, 90), (60, 90)),
+            (),
+        ),
+    )
+    return RecognitionResult(
+        BoardState(tuple(branch.birds for branch in branches)),
+        branches,
+        1,
+        (1,),
+        None,
+        (100, 200),
+    )
 
-    @patch("suanniao.cli.time.sleep", return_value=None)
-    def test_dry_run_waits_without_tapping_ad(self, _sleep) -> None:
-        ad = Image.new("RGB", (100, 200), "black")
-        board = Image.new("RGB", (100, 200), "white")
-        expected = recognition()
-        controller = FakeController([ad, board], dismiss_results=[True])
-        recognizer = FakeRecognizer([RecognitionError("no board"), expected])
 
-        _wait_for_board(
-            controller,
-            recognizer,
-            ad_mode="auto",
-            timeout=10,
-            poll_interval=0.01,
-            allow_dismiss=False,
-        )
+class PlayDebugOutputTests(unittest.TestCase):
+    def test_each_run_directory_is_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = _create_run_directory(root)
+            second = _create_run_directory(root)
 
-        self.assertEqual(controller.dismiss_calls, 0)
+            self.assertTrue(first.is_dir())
+            self.assertTrue(second.is_dir())
+            self.assertNotEqual(first, second)
 
-    @patch("suanniao.cli.time.sleep", return_value=None)
-    def test_partial_ad_waits_for_changed_stable_board(self, _sleep) -> None:
-        blocked = Image.new("RGB", (100, 200), "black")
-        restored_one = Image.new("RGB", (100, 200), "white")
-        restored_two = Image.new("RGB", (100, 200), "white")
-        expected = recognition(((0,), ()))
-        controller = FakeController([restored_one, restored_two])
-        recognizer = FakeRecognizer([expected, expected])
+    def test_play_saves_screenshot_and_passes_turn_cluster_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_directory = Path(directory) / "run-test"
+            run_directory.mkdir()
+            controller = FakeController()
+            recognizer = FakeRecognizer(sample_recognition())
+            args = build_parser().parse_args(["play", "--dry-run"])
 
-        screenshot, result = _wait_for_interaction_recovery(
-            controller,
-            recognizer,
-            blocked,
-            ad_mode="wait",
-            timeout=10,
-            poll_interval=0.01,
-            allow_dismiss=True,
-        )
+            with (
+                patch("suanniao.cli._create_run_directory", return_value=run_directory),
+                patch("suanniao.cli._controller", return_value=controller),
+                patch("suanniao.cli._recognizer", return_value=recognizer),
+                patch("suanniao.cli._solver", return_value=FakeSolver()),
+            ):
+                exit_code = play(args)
 
-        self.assertIs(screenshot, restored_two)
-        self.assertIs(result, expected)
-        self.assertEqual(controller.dismiss_calls, 0)
-
-    def test_ad_options_have_safe_defaults(self) -> None:
-        args = build_parser().parse_args(["play", "--platform", "ios"])
-
-        self.assertEqual(args.ad_mode, "wait")
-        self.assertEqual(args.ad_wait_timeout, 300.0)
-        self.assertEqual(args.ad_poll_interval, 1.0)
-        self.assertEqual(args.interaction_retries, 2)
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((run_directory / "turn-001.png").is_file())
+            self.assertEqual(
+                recognizer.debug_directories,
+                [run_directory / "turn-001-clusters"],
+            )
+            self.assertTrue(controller.closed)
 
 
 if __name__ == "__main__":

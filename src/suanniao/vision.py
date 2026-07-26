@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 
 # Prevent scikit-learn from probing CPU topology in restricted environments.
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+from scipy import ndimage  # noqa: E402
 from scipy.optimize import linear_sum_assignment  # noqa: E402
 from sklearn.cluster import KMeans  # noqa: E402
 from sklearn.metrics import silhouette_score  # noqa: E402
@@ -68,6 +69,15 @@ class _ClusterCandidate:
         return self.invalid == 0
 
 
+@dataclass(frozen=True, slots=True)
+class _PresenceEvidence:
+    score: float
+    foreground_fraction: float
+    bird_fraction: float
+    largest_component_fraction: float
+    largest_component_height: float
+
+
 class BoardRecognizer:
     """Detect branches and cluster visually identical birds without training."""
 
@@ -83,6 +93,17 @@ class BoardRecognizer:
         self.type_count = type_count
         self.max_types = max_types
         self.presence_threshold = presence_threshold
+
+    def has_game_board(self, source: str | Path | Image.Image) -> bool:
+        """Cheaply distinguish a normal board from a full-screen interruption."""
+
+        image = (
+            source.convert("RGB")
+            if isinstance(source, Image.Image)
+            else Image.open(source).convert("RGB")
+        )
+        rows = self._detect_branch_rows(np.asarray(image))
+        return bool(rows["left"] and rows["right"] and sum(map(len, rows.values())) >= 4)
 
     def read(
         self,
@@ -104,46 +125,69 @@ class BoardRecognizer:
         background_color = self._background_color(rgb)
         rows = self._detect_branch_rows(rgb)
         records: list[dict[str, object]] = []
-        features: list[np.ndarray] = []
-        bird_crops: list[Image.Image] = []
 
         for side in ("left", "right"):
             for branch_y in rows[side]:
                 bird_y = round(branch_y - 0.0195 * height)
                 slots = self._slot_centers(side, bird_y, width)
-                presence_scores = tuple(
-                    self._presence_score(rgb, x, y) for x, y in slots
+                presence_evidence = tuple(
+                    self._presence_evidence(rgb, x, y) for x, y in slots
                 )
-                occupied = 0
-                for score in presence_scores:
-                    if score >= self.presence_threshold:
-                        occupied += 1
-                    else:
-                        break
-
-                feature_indexes: list[int] = []
-                for x, y in slots[:occupied]:
-                    feature_indexes.append(len(features))
-                    crop = self._bird_crop(image, x, y, side, width, height)
-                    bird_crops.append(crop)
-                    features.append(
-                        self._bird_feature_from_crop(crop, background_color)
-                    )
-
                 records.append(
                     {
                         "side": side,
                         "branch_y": branch_y,
                         "bird_y": bird_y,
                         "slots": slots,
-                        "presence_scores": presence_scores,
-                        "occupied": occupied,
-                        "features": feature_indexes,
+                        "presence_evidence": presence_evidence,
                     }
                 )
 
+        occupancies = self._select_occupancies(
+            tuple(
+                tuple(evidence.score for evidence in record["presence_evidence"])
+                for record in records
+            )
+        )
+        features: list[np.ndarray] = []
+        bird_crops: list[Image.Image] = []
+        for record, occupied in zip(records, occupancies):
+            evidence = record["presence_evidence"]
+            raw_occupied = self._threshold_occupancy(
+                tuple(item.score for item in evidence)  # type: ignore[union-attr]
+            )
+            feature_indexes: list[int] = []
+            slots = record["slots"]
+            side = record["side"]
+            for slot_index, (x, y) in enumerate(slots[:occupied]):  # type: ignore[index]
+                feature_indexes.append(len(features))
+                crop = self._bird_crop(
+                    image,
+                    x,
+                    y,
+                    side,  # type: ignore[arg-type]
+                    width,
+                    height,
+                    background_color,
+                    has_outer_neighbor=slot_index < occupied - 1,
+                )
+                bird_crops.append(crop)
+                features.append(
+                    self._bird_feature_from_crop(crop, background_color)
+                )
+            record["raw_occupied"] = raw_occupied
+            record["occupied"] = occupied
+            record["features"] = feature_indexes
+
         if debug_path is not None:
-            self._write_detection_debug(image, rows, records, bird_crops, debug_path)
+            self._write_detection_debug(
+                image,
+                rows,
+                records,
+                bird_crops,
+                background_color,
+                debug_path,
+            )
 
         if not records:
             if debug_path is not None:
@@ -252,12 +296,12 @@ class BoardRecognizer:
             image.size,
         )
 
-    def _detect_branch_rows(self, rgb: np.ndarray) -> dict[Side, list[int]]:
-        height, width = rgb.shape[:2]
+    @staticmethod
+    def _wood_mask(rgb: np.ndarray) -> np.ndarray:
         red = rgb[:, :, 0].astype(np.int16)
         green = rgb[:, :, 1].astype(np.int16)
         blue = rgb[:, :, 2].astype(np.int16)
-        wood = (
+        return (
             (red > 55)
             & (red < 205)
             & (green > 22)
@@ -265,6 +309,10 @@ class BoardRecognizer:
             & (blue < 95)
             & ((red - green) > 22)
         )
+
+    def _detect_branch_rows(self, rgb: np.ndarray) -> dict[Side, list[int]]:
+        height, width = rgb.shape[:2]
+        wood = self._wood_mask(rgb)
 
         result: dict[Side, list[int]] = {"left": [], "right": []}
         ranges = {
@@ -316,15 +364,17 @@ class BoardRecognizer:
             for index in range(self.capacity)
         )
 
-    @staticmethod
-    def _presence_score(rgb: np.ndarray, x: int, y: int) -> float:
+    def _presence_evidence(
+        self, rgb: np.ndarray, x: int, y: int
+    ) -> _PresenceEvidence:
         height, width = rgb.shape[:2]
         half_width = max(12, round(width * 0.032))
         top = max(0, y - round(height * 0.022))
         bottom = min(height, y + round(height * 0.008))
         left = max(0, x - half_width)
         right = min(width, x + half_width + 1)
-        crop = rgb[top:bottom, left:right].astype(float)
+        crop_rgb = rgb[top:bottom, left:right]
+        crop = crop_rgb.astype(float)
 
         bg_left = round(0.43 * width)
         bg_right = round(0.57 * width)
@@ -334,7 +384,101 @@ class BoardRecognizer:
             rgb[bg_top:bg_bottom, bg_left:bg_right].astype(float), axis=(0, 1)
         )
         distance = np.linalg.norm(crop - background, axis=2)
-        return float((distance > 45.0).mean())
+        foreground = distance > 45.0
+        bird_mask = foreground & ~self._wood_mask(crop_rgb)
+
+        labels, component_count = ndimage.label(
+            bird_mask,
+            structure=np.ones((3, 3), dtype=int),
+        )
+        largest_area = 0
+        largest_height = 0
+        if component_count:
+            component_sizes = np.bincount(labels.ravel())[1:]
+            largest_label = int(component_sizes.argmax()) + 1
+            largest_area = int(component_sizes[largest_label - 1])
+            component_rows = np.where(labels == largest_label)[0]
+            if len(component_rows):
+                largest_height = int(component_rows.max() - component_rows.min() + 1)
+
+        area = max(int(bird_mask.size), 1)
+        roi_height = max(int(bird_mask.shape[0]), 1)
+        foreground_fraction = float(foreground.mean())
+        bird_fraction = float(bird_mask.mean())
+        largest_component_fraction = largest_area / area
+        largest_component_height = largest_height / roi_height
+        score = (
+            0.55 * bird_fraction
+            + 0.25 * largest_component_fraction
+            + 0.20 * largest_component_height
+        )
+        return _PresenceEvidence(
+            score,
+            foreground_fraction,
+            bird_fraction,
+            largest_component_fraction,
+            largest_component_height,
+        )
+
+    def _threshold_occupancy(self, scores: tuple[float, ...]) -> int:
+        occupied = 0
+        for score in scores:
+            if score < self.presence_threshold:
+                break
+            occupied += 1
+        return occupied
+
+    def _select_occupancies(
+        self, score_rows: tuple[tuple[float, ...], ...]
+    ) -> tuple[int, ...]:
+        """Choose prefix occupancies while enforcing a globally valid bird count."""
+
+        # remainder -> (confidence, occupancies). Each branch can contain only
+        # a prefix of 0..capacity birds from its fixed/base end.
+        states: dict[int, tuple[float, tuple[int, ...]]] = {0: (0.0, ())}
+        for scores in score_rows:
+            next_states: dict[int, tuple[float, tuple[int, ...]]] = {}
+            margins = tuple(score - self.presence_threshold for score in scores)
+            for remainder, (confidence, path) in states.items():
+                for occupied in range(self.capacity + 1):
+                    branch_confidence = sum(margins[:occupied]) - sum(
+                        margins[occupied:]
+                    )
+                    next_remainder = (remainder + occupied) % self.capacity
+                    candidate = confidence + branch_confidence, path + (occupied,)
+                    previous = next_states.get(next_remainder)
+                    if previous is None or candidate[0] > previous[0]:
+                        next_states[next_remainder] = candidate
+            states = next_states
+        return states[0][1] if score_rows else ()
+
+    @staticmethod
+    def _bird_crop_box(
+        x: int,
+        y: int,
+        side: Side,
+        width: int,
+        height: int,
+        *,
+        has_outer_neighbor: bool,
+    ) -> tuple[int, int, int, int]:
+        # Packed birds overlap in the movable/outer direction. Shift crops a
+        # little toward the fixed/base end, preserving more of the current
+        # bird while excluding the neighbor drawn over it.
+        direction = 1 if side == "left" else -1
+        center_x = (
+            round(x - direction * 0.006 * width)
+            if has_outer_neighbor
+            else x
+        )
+        half_width = round(0.040 * width)
+        half_height = round(0.021 * height)
+        return (
+            center_x - half_width,
+            y - half_height,
+            center_x + half_width + 1,
+            y + half_height + 1,
+        )
 
     @staticmethod
     def _bird_crop(
@@ -344,12 +488,38 @@ class BoardRecognizer:
         side: Side,
         width: int,
         height: int,
+        background_color: np.ndarray,
+        *,
+        has_outer_neighbor: bool,
     ) -> Image.Image:
-        half_width = round(0.036 * width)
-        half_height = round(0.021 * height)
-        crop = image.crop(
-            (x - half_width, y - half_height, x + half_width + 1, y + half_height + 1)
-        ).resize((49, 62), Image.Resampling.BILINEAR)
+        crop_box = BoardRecognizer._bird_crop_box(
+            x,
+            y,
+            side,
+            width,
+            height,
+            has_outer_neighbor=has_outer_neighbor,
+        )
+        left, top, right, bottom = crop_box
+        crop_width = right - left
+        crop_height = bottom - top
+        fill = tuple(int(round(channel * 255)) for channel in background_color)
+        crop = Image.new("RGB", (crop_width, crop_height), fill)
+        source_box = (
+            max(0, left),
+            max(0, top),
+            min(width, right),
+            min(height, bottom),
+        )
+        source_crop = image.crop(source_box)
+        crop.paste(
+            source_crop,
+            (
+                max(0, -left),
+                max(0, -top),
+            ),
+        )
+        crop = crop.resize((49, 62), Image.Resampling.BILINEAR)
         if side == "right":
             crop = crop.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         return crop
@@ -364,24 +534,27 @@ class BoardRecognizer:
         return np.median(sample.astype(float), axis=(0, 1)) / 255.0
 
     @staticmethod
-    def _bird_feature_from_crop(
+    def _bird_feature_mask(
         crop: Image.Image, background_color: np.ndarray
     ) -> np.ndarray:
         pixels = np.asarray(crop).astype(float) / 255.0
-        hsv = np.asarray(crop.convert("HSV")).astype(float) / 255.0
         height, width = pixels.shape[:2]
         yy, xx = np.mgrid[0:height, 0:width]
-
-        # Birds overlap their neighbors and the branch near the crop boundary.
-        # The central oval keeps the stable body/head area that remains visible
-        # in every slot, including the exposed outer slot.
         central = (
             ((xx - (width - 1) / 2) / (width * 0.30)) ** 2
             + ((yy - height * 0.40) / (height * 0.32)) ** 2
             < 1.0
         )
         foreground = np.linalg.norm(pixels - background_color, axis=2) > 0.10
-        mask = central & foreground
+        return central & foreground
+
+    @staticmethod
+    def _bird_feature_from_crop(
+        crop: Image.Image, background_color: np.ndarray
+    ) -> np.ndarray:
+        pixels = np.asarray(crop).astype(float) / 255.0
+        hsv = np.asarray(crop.convert("HSV")).astype(float) / 255.0
+        mask = BoardRecognizer._bird_feature_mask(crop, background_color)
         denominator = max(int(mask.sum()), 1)
 
         hue = hsv[:, :, 0]
@@ -454,7 +627,7 @@ class BoardRecognizer:
                 int(value)
                 for value in np.bincount(raw_labels, minlength=type_count)
             )
-            capacity_targets = self._capacity_targets(raw_sizes)
+            capacity_targets = self._capacity_targets(matrix, centers, raw_sizes)
             labels, constrained_iterations = self._constrained_assignment(
                 matrix, centers, capacity_targets
             )
@@ -483,32 +656,77 @@ class BoardRecognizer:
             )
         return tuple(candidates)
 
-    def _capacity_targets(self, raw_sizes: tuple[int, ...]) -> tuple[int, ...]:
-        """Project raw K-Means sizes to the nearest positive multiples of capacity."""
+    def _capacity_target_candidates(
+        self,
+        raw_sizes: tuple[int, ...],
+        *,
+        limit: int = 32,
+    ) -> tuple[tuple[int, ...], ...]:
+        """Return the best size-based multiple-of-capacity target candidates."""
+
         total = sum(raw_sizes)
         total_units = total // self.capacity
         cluster_count = len(raw_sizes)
-        # used units -> (sum of squared changes, sum of absolute changes, path)
-        states: dict[int, tuple[int, int, tuple[int, ...]]] = {0: (0, 0, ())}
+        # used units -> [(sum of squared changes, absolute changes, path), ...]
+        states: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {
+            0: [(0, 0, ())]
+        }
         for index, raw_size in enumerate(raw_sizes):
             remaining_clusters = cluster_count - index - 1
-            next_states: dict[int, tuple[int, int, tuple[int, ...]]] = {}
-            for used_units, (squared_cost, absolute_cost, path) in states.items():
+            next_states: dict[int, list[tuple[int, int, tuple[int, ...]]]] = {}
+            for used_units, options in states.items():
                 max_units = total_units - used_units - remaining_clusters
-                for units in range(1, max_units + 1):
-                    size = units * self.capacity
-                    difference = size - raw_size
-                    new_used = used_units + units
-                    candidate = (
-                        squared_cost + difference * difference,
-                        absolute_cost + abs(difference),
-                        path + (size,),
-                    )
-                    previous = next_states.get(new_used)
-                    if previous is None or candidate[:2] < previous[:2]:
-                        next_states[new_used] = candidate
-            states = next_states
-        return states[total_units][2]
+                for squared_cost, absolute_cost, path in options:
+                    for units in range(1, max_units + 1):
+                        size = units * self.capacity
+                        difference = size - raw_size
+                        new_used = used_units + units
+                        next_states.setdefault(new_used, []).append(
+                            (
+                                squared_cost + difference * difference,
+                                absolute_cost + abs(difference),
+                                path + (size,),
+                            )
+                        )
+            states = {
+                used: sorted(options)[:limit]
+                for used, options in next_states.items()
+            }
+        return tuple(option[2] for option in states[total_units])
+
+    def _capacity_targets(
+        self,
+        matrix: np.ndarray,
+        centers: np.ndarray,
+        raw_sizes: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        """Select target sizes using both raw counts and feature assignment cost."""
+
+        distances = ((matrix[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        best: tuple[float, int, int, tuple[int, ...]] | None = None
+        for capacities in self._capacity_target_candidates(raw_sizes):
+            slot_clusters = np.repeat(np.arange(len(capacities)), capacities)
+            row_indexes, slot_indexes = linear_sum_assignment(
+                distances[:, slot_clusters]
+            )
+            assignment_cost = float(
+                distances[row_indexes, slot_clusters[slot_indexes]].sum()
+            )
+            differences = tuple(
+                capacity - raw
+                for capacity, raw in zip(capacities, raw_sizes)
+            )
+            candidate = (
+                assignment_cost,
+                sum(difference * difference for difference in differences),
+                sum(abs(difference) for difference in differences),
+                capacities,
+            )
+            if best is None or candidate < best:
+                best = candidate
+        if best is None:
+            raise ValueError("No valid capacity target allocation")
+        return best[3]
 
     @staticmethod
     def _constrained_assignment(
@@ -568,6 +786,7 @@ class BoardRecognizer:
         rows: dict[Side, list[int]],
         records: list[dict[str, object]],
         bird_crops: list[Image.Image],
+        background_color: np.ndarray,
         debug_path: Path,
     ) -> None:
         annotated = image.copy()
@@ -607,12 +826,30 @@ class BoardRecognizer:
                     else f"E{branch_index}:{slot_index}"
                 )
                 draw.text((x - radius, y + radius + 2), label, fill=color)
+                if is_occupied:
+                    crop_box = self._bird_crop_box(
+                        x,
+                        y,
+                        record["side"],  # type: ignore[arg-type]
+                        image.width,
+                        image.height,
+                        has_outer_neighbor=slot_index < occupied - 1,
+                    )
+                    draw.rectangle(crop_box, outline=(255, 190, 35), width=line_width)
 
         annotated.save(debug_path / "01-detection.png")
         birds_path = debug_path / "birds"
         birds_path.mkdir(parents=True, exist_ok=True)
         for index, crop in enumerate(bird_crops):
             crop.save(birds_path / f"bird-{index:03d}.png")
+        masks_path = debug_path / "feature-masks"
+        masks_path.mkdir(parents=True, exist_ok=True)
+        fill = tuple(int(round(channel * 255)) for channel in background_color)
+        for index, crop in enumerate(bird_crops):
+            mask = self._bird_feature_mask(crop, background_color)
+            masked = Image.new("RGB", crop.size, fill)
+            masked.paste(crop, mask=Image.fromarray(mask.astype(np.uint8) * 255))
+            masked.save(masks_path / f"bird-{index:03d}.png")
 
     def _write_debug_report(
         self,
@@ -633,7 +870,7 @@ class BoardRecognizer:
         branches_payload = []
         for index, record in enumerate(records):
             slots = record["slots"]
-            scores = record["presence_scores"]
+            evidence = record["presence_evidence"]
             occupied = int(record["occupied"])  # type: ignore[arg-type]
             branches_payload.append(
                 {
@@ -641,13 +878,49 @@ class BoardRecognizer:
                     "side": record["side"],
                     "branch_y": record["branch_y"],
                     "bird_y": record["bird_y"],
+                    "raw_occupied": record["raw_occupied"],
                     "occupied": occupied,
                     "slots": [
                         {
                             "index": slot_index,
                             "point": point,
                             "presence_score": round(
-                                float(scores[slot_index]), 6  # type: ignore[index]
+                                float(evidence[slot_index].score), 6  # type: ignore[index]
+                            ),
+                            "foreground_fraction": round(
+                                float(evidence[slot_index].foreground_fraction),  # type: ignore[index]
+                                6,
+                            ),
+                            "bird_fraction": round(
+                                float(evidence[slot_index].bird_fraction), 6  # type: ignore[index]
+                            ),
+                            "largest_component_fraction": round(
+                                float(
+                                    evidence[  # type: ignore[index]
+                                        slot_index
+                                    ].largest_component_fraction
+                                ),
+                                6,
+                            ),
+                            "largest_component_height": round(
+                                float(
+                                    evidence[  # type: ignore[index]
+                                        slot_index
+                                    ].largest_component_height
+                                ),
+                                6,
+                            ),
+                            "crop_box": (
+                                self._bird_crop_box(
+                                    point[0],
+                                    point[1],
+                                    record["side"],  # type: ignore[arg-type]
+                                    image.width,
+                                    image.height,
+                                    has_outer_neighbor=slot_index < occupied - 1,
+                                )
+                                if slot_index < occupied
+                                else None
                             ),
                             "present": slot_index < occupied,
                         }
@@ -661,6 +934,7 @@ class BoardRecognizer:
             "image_size": image.size,
             "capacity": self.capacity,
             "presence_threshold": self.presence_threshold,
+            "occupancy_constraint": "prefix-per-branch,total-multiple-of-capacity",
             "branch_rows": rows,
             "detected_branches": len(records),
             "detected_birds": len(bird_crops),
@@ -772,7 +1046,10 @@ class BoardRecognizer:
                 f'alt="k={candidate["type_count"]}"></a></section>'
             )
         bird_images = "".join(
-            f'<figure><img src="birds/bird-{index:03d}.png" alt="B{index}">'
+            f'<figure><div class="bird-pair">'
+            f'<img src="birds/bird-{index:03d}.png" alt="B{index} crop">'
+            f'<img src="feature-masks/bird-{index:03d}.png" '
+            f'alt="B{index} feature mask"></div>'
             f'<figcaption>B{index}</figcaption></figure>'
             for index in range(bird_count)
         )
@@ -787,16 +1064,17 @@ class BoardRecognizer:
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;background:#f5f6f8;color:#18212b}}
 main{{max-width:1200px;margin:auto}} .card{{background:white;border-radius:12px;padding:16px;margin:18px 0;box-shadow:0 2px 10px #0001}}
 .selected{{outline:3px solid #2ca96b}} img{{max-width:100%;height:auto}} .birds{{display:flex;flex-wrap:wrap;gap:8px}}
-figure{{margin:0;padding:6px;background:white;border-radius:6px;text-align:center}} code{{background:#e9edf2;padding:2px 5px;border-radius:4px}}
+figure{{margin:0;padding:6px;background:white;border-radius:6px;text-align:center}} .bird-pair{{display:flex;gap:3px}}
+.bird-pair img{{width:49px;height:62px;image-rendering:auto}} code{{background:#e9edf2;padding:2px 5px;border-radius:4px}}
 </style>
 </head>
 <body><main>
 <h1>算鸟聚类调试报告</h1>
 <p>检测到 <strong>{report["detected_branches"]}</strong> 根树枝、<strong>{report["detected_birds"]}</strong> 只鸟；
-占用阈值 <code>{report["presence_threshold"]}</code>，聚类算法 <code>{report["clustering_algorithm"]}</code>。
+占用阈值 <code>{report["presence_threshold"]}</code>，鸟总数使用容量倍数约束，聚类算法 <code>{report["clustering_algorithm"]}</code>。
 绿色槽位为已识别鸟，红色槽位为空。</p>
 <section class="card"><h2>树枝与槽位检测</h2><a href="01-detection.png"><img src="01-detection.png" alt="检测标注图"></a></section>
 <h2>候选聚类</h2>{candidate_html}
-<h2>标准化鸟裁剪</h2><div class="birds">{bird_images}</div>
+<h2>标准化鸟裁剪与特征掩码</h2><p>每组左侧为标准化裁剪，右侧为实际送入颜色特征统计的区域。</p><div class="birds">{bird_images}</div>
 <p>完整数值见 <a href="report.json">report.json</a>。</p>
 </main></body></html>"""
