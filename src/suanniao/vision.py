@@ -549,8 +549,15 @@ class BoardRecognizer:
         pixels = np.asarray(crop).astype(float) / 255.0
         height, width = pixels.shape[:2]
         yy, xx = np.mgrid[0:height, 0:width]
+        # _bird_crop() mirrors right-side branches, so the branch's fixed/base
+        # end is always on the left of the normalized crop. Packed birds overlap
+        # from the movable end on the right. Bias the feature region toward the
+        # base-side body instead of centering it between two neighboring birds.
+        # Besides reducing neighbor contamination, this retains the body pattern
+        # that distinguishes visually similar sprites such as the cow and the
+        # orange bird.
         central = (
-            ((xx - (width - 1) / 2) / (width * 0.30)) ** 2
+            ((xx - width * 0.36) / (width * 0.25)) ** 2
             + ((yy - height * 0.40) / (height * 0.32)) ** 2
             < 1.0
         )
@@ -870,11 +877,20 @@ class BoardRecognizer:
         selected: _ClusterCandidate | None,
         debug_path: Path,
     ) -> None:
+        background_color = self._background_color(np.asarray(image))
+        fill = tuple(int(round(channel * 255)) for channel in background_color)
+        feature_crops: list[Image.Image] = []
+        for crop in bird_crops:
+            mask = self._bird_feature_mask(crop, background_color)
+            masked = Image.new("RGB", crop.size, fill)
+            masked.paste(crop, mask=Image.fromarray(mask.astype(np.uint8) * 255))
+            feature_crops.append(masked)
+
         candidate_files: dict[int, str] = {}
         for candidate in candidates:
             filename = f"clusters-k{candidate.type_count:02d}.png"
             candidate_files[candidate.type_count] = filename
-            self._write_cluster_montage(candidate, bird_crops, debug_path / filename)
+            self._write_cluster_montage(candidate, feature_crops, debug_path / filename)
 
         branches_payload = []
         for index, record in enumerate(records):

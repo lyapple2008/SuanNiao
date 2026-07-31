@@ -162,6 +162,21 @@ class VisionTests(unittest.TestCase):
         self.assertEqual(left_box[0], 0)
         self.assertEqual(right_box[2], 1000)
 
+    def test_bird_feature_mask_favors_base_side_over_outer_neighbor(self) -> None:
+        background = np.asarray((155, 215, 240), dtype=float) / 255.0
+        pixels = np.full((62, 49, 3), (155, 215, 240), dtype=np.uint8)
+        # After right-side normalization, the target bird's base-side body is
+        # on the left and contamination from the outer neighbor is on the right.
+        pixels[20:40, 8:17] = (30, 30, 30)
+        pixels[20:40, 37:46] = (30, 30, 30)
+
+        mask = BoardRecognizer._bird_feature_mask(
+            Image.fromarray(pixels), background
+        )
+
+        self.assertTrue(mask[28, 12])
+        self.assertFalse(mask[28, 41])
+
     def test_capacity_targets_use_visual_cost_to_break_size_tie(self) -> None:
         recognizer = BoardRecognizer()
         matrix = np.asarray([[0.0]] * 8 + [[10.0]] * 12)
