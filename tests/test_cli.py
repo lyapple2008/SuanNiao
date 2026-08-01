@@ -11,14 +11,16 @@ from suanniao.cli import (
     _capture_game_board,
     _create_run_directory,
     _destination_click_point,
+    _is_plausible_board_transition,
     _physical_state_key,
+    _prepare_manual_start,
     analyze,
     build_parser,
     play,
 )
 from suanniao.model import BoardState, Move
 from suanniao.solver import SolveResult
-from suanniao.vision import DetectedBranch, RecognitionResult
+from suanniao.vision import DetectedBranch, RecognitionError, RecognitionResult
 
 
 def solid_image(color: str) -> Image.Image:
@@ -37,6 +39,7 @@ class FakeController:
         self.quick_screenshots = list(quick_screenshots or (solid_image("white"),))
         self.dismiss_results = list(dismiss_results)
         self.stable_capture_options: list[dict[str, object]] = []
+        self.capture_calls = 0
         self.dismiss_calls = 0
         self.taps: list[tuple[int, int]] = []
         self.closed = False
@@ -53,6 +56,7 @@ class FakeController:
         return self._next(self.stable_screenshots)
 
     def capture(self) -> Image.Image:
+        self.capture_calls += 1
         return self._next(self.quick_screenshots)
 
     def dismiss_interruption(self) -> bool:
@@ -85,12 +89,17 @@ class FakeRecognizer:
         results: RecognitionResult | tuple[RecognitionResult, ...],
         *,
         board_results: tuple[bool, ...] = (True,),
+        read_errors: tuple[bool, ...] = (False,),
     ) -> None:
         self.results = list(results if isinstance(results, tuple) else (results,))
         self.board_results = list(board_results)
+        self.read_errors = list(read_errors)
         self.debug_directories: list[Path] = []
+        self.has_game_board_calls = 0
+        self.read_debug_directories: list[Path | None] = []
 
     def has_game_board(self, _screenshot: Image.Image) -> bool:
+        self.has_game_board_calls += 1
         if len(self.board_results) > 1:
             return self.board_results.pop(0)
         return self.board_results[0]
@@ -98,6 +107,13 @@ class FakeRecognizer:
     def read(
         self, _screenshot: Image.Image, *, debug_dir: Path | None = None
     ) -> RecognitionResult:
+        self.read_debug_directories.append(debug_dir)
+        if len(self.read_errors) > 1:
+            should_raise = self.read_errors.pop(0)
+        else:
+            should_raise = self.read_errors[0]
+        if should_raise:
+            raise RecognitionError("simulated recognition failure")
         if debug_dir is not None:
             self.debug_directories.append(debug_dir)
         if len(self.results) > 1:
@@ -154,6 +170,20 @@ def solve_result(*moves: Move, solved: bool = False) -> SolveResult:
 
 
 class PlayTests(unittest.TestCase):
+    def test_board_transition_allows_only_one_completed_branch(self) -> None:
+        self.assertTrue(_is_plausible_board_transition((15, 52), (15, 52)))
+        self.assertTrue(_is_plausible_board_transition((15, 52), (14, 48)))
+        self.assertFalse(_is_plausible_board_transition((15, 52), (2, 8)))
+
+    def test_manual_start_prewarms_capture_before_confirmation(self) -> None:
+        controller = FakeController()
+
+        with patch("builtins.input", return_value="") as confirm:
+            _prepare_manual_start(controller)
+
+        self.assertEqual(controller.capture_calls, 1)
+        confirm.assert_called_once()
+
     def test_destination_click_uses_slot_farthest_from_source(self) -> None:
         branch = DetectedBranch(
             "right",
@@ -242,8 +272,106 @@ class PlayTests(unittest.TestCase):
                 [{"interval": 0.10, "attempts": 5}],
             )
 
+    def test_deferred_reports_skip_live_debug_and_board_precheck(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_directory = Path(directory) / "run-test"
+            run_directory.mkdir()
+            controller = FakeController()
+            recognizer = FakeRecognizer(sample_recognition())
+            args = build_parser().parse_args(
+                ["play", "--dry-run", "--debug-reports", "deferred"]
+            )
+
+            with (
+                patch("suanniao.cli._create_run_directory", return_value=run_directory),
+                patch("suanniao.cli._controller", return_value=controller),
+                patch("suanniao.cli._recognizer", return_value=recognizer),
+                patch(
+                    "suanniao.cli._solver",
+                    return_value=FakeSolver(solve_result(Move(0, 1, 1))),
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                exit_code = play(args)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                recognizer.read_debug_directories,
+                [None, run_directory / "turn-001-clusters"],
+            )
+            self.assertEqual(recognizer.has_game_board_calls, 1)
+
     @patch("suanniao.cli.time.sleep", return_value=None)
-    def test_interruption_is_closed_then_manual_prompt_is_shown_if_needed(
+    def test_implausible_recognition_is_treated_as_interruption(
+        self, _sleep: object
+    ) -> None:
+        suspicious = sample_recognition(((0, 0, 0, 1), (1, 1, 1, 0)))
+        recovered = sample_recognition(
+            tuple(
+                (index % 2,) * 4 if index < 13 else ()
+                for index in range(15)
+            )
+        )
+        controller = FakeController(
+            stable_screenshots=(solid_image("gray"), solid_image("white"))
+        )
+        recognizer = FakeRecognizer((suspicious, recovered))
+        args = build_parser().parse_args(
+            ["play", "--debug-reports", "off", "--interruption-poll-interval", "0.1"]
+        )
+
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(output):
+            screenshot, result = _capture_game_board(
+                controller,
+                recognizer,
+                args,
+                Path(directory),
+                "turn-009",
+                (15, 52),
+            )
+
+            self.assertIs(screenshot, controller.stable_screenshots[0])
+            self.assertIs(result, recovered)
+            self.assertTrue(
+                (Path(directory) / "turn-009-suspicious-board-001.png").is_file()
+            )
+            self.assertIn("变化幅度不合理", output.getvalue())
+
+    @patch("suanniao.cli.time.sleep", return_value=None)
+    def test_no_move_requires_repeated_stable_confirmation(
+        self, _sleep: object
+    ) -> None:
+        recognition = sample_recognition(((0, 0, 0, 1), (1, 1, 1, 0)))
+        controller = FakeController(
+            stable_screenshots=(solid_image("white"), solid_image("white"))
+        )
+        recognizer = FakeRecognizer((recognition, recognition))
+        args = build_parser().parse_args(["play", "--dry-run"])
+
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(output):
+            with (
+                patch(
+                    "suanniao.cli._create_run_directory",
+                    return_value=Path(directory),
+                ),
+                patch("suanniao.cli._controller", return_value=controller),
+                patch("suanniao.cli._recognizer", return_value=recognizer),
+                patch(
+                    "suanniao.cli._solver",
+                    return_value=FakeSolver(solve_result()),
+                ),
+            ):
+                exit_code = play(args)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(len(controller.stable_capture_options), 2)
+        self.assertIn("重新截图确认（1/2）", output.getvalue())
+        self.assertIn("连续稳定截图", output.getvalue())
+
+    @patch("suanniao.cli.time.sleep", return_value=None)
+    def test_interruption_is_logged_without_automatic_close_action(
         self, _sleep: object
     ) -> None:
         ad_one = solid_image("black")
@@ -272,9 +400,9 @@ class PlayTests(unittest.TestCase):
 
             self.assertIs(screenshot, board)
             self.assertIs(result, recognizer.results[0])
-            self.assertEqual(controller.dismiss_calls, 2)
-            self.assertIn("已自动点击", output.getvalue())
-            self.assertIn("请手动关闭广告窗口", output.getvalue())
+            self.assertEqual(controller.dismiss_calls, 0)
+            self.assertIn("程序不会自动操作", output.getvalue())
+            self.assertIn("请手动处理", output.getvalue())
             self.assertIn("已重新检测到游戏棋盘", output.getvalue())
             self.assertTrue(
                 (Path(directory) / "turn-001-interruption-001.png").is_file()
@@ -290,13 +418,13 @@ class PlayTests(unittest.TestCase):
         first_recognition = sample_recognition(
             ((0,), (0, 0, 0), (1,), (1, 1, 1))
         )
-        second_recognition = sample_recognition(((1,), (1, 1, 1)))
+        second_recognition = sample_recognition(((), (1,), (1, 1, 1)))
         first_solution = solve_result(
             Move(0, 1, 1, True),
             Move(2, 3, 1, True),
             solved=True,
         )
-        second_solution = solve_result(Move(0, 1, 1, True), solved=True)
+        second_solution = solve_result(Move(1, 2, 1, True), solved=True)
         controller = FakeController(
             stable_screenshots=(solid_image("white"), solid_image("white"))
         )
@@ -335,6 +463,7 @@ class PlayTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(controller.taps), 4)
+        self.assertEqual(len(controller.clear_selection_calls), 1)
         self.assertEqual(len(controller.stable_capture_options), 2)
         self.assertEqual(
             recognizer.debug_directories,
@@ -345,6 +474,54 @@ class PlayTests(unittest.TestCase):
         )
         self.assertEqual(controller.dismiss_calls, 0)
         self.assertTrue(controller.closed)
+
+    @patch("suanniao.cli.time.sleep", return_value=None)
+    def test_failed_elimination_is_detected_by_expected_summary(
+        self, _sleep: object
+    ) -> None:
+        unchanged = sample_recognition(
+            ((0,), (0, 0, 0), (1,), (1, 1, 1))
+        )
+        controller = FakeController(
+            stable_screenshots=(solid_image("white"), solid_image("white"))
+        )
+        recognizer = FakeRecognizer((unchanged, unchanged))
+        solver = FakeSolver(
+            (
+                solve_result(Move(0, 1, 1, True)),
+                solve_result(),
+            )
+        )
+        args = build_parser().parse_args(
+            [
+                "play",
+                "--no-move-confirmations",
+                "1",
+                "--tap-gap",
+                "0",
+                "--move-wait",
+                "0",
+                "--elimination-wait",
+                "0",
+            ]
+        )
+
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(output):
+            with (
+                patch(
+                    "suanniao.cli._create_run_directory",
+                    return_value=Path(directory),
+                ),
+                patch("suanniao.cli._controller", return_value=controller),
+                patch("suanniao.cli._recognizer", return_value=recognizer),
+                patch("suanniao.cli._solver", return_value=solver),
+            ):
+                exit_code = play(args)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(len(controller.clear_selection_calls), 2)
+        self.assertIn("实际棋盘与上一批预期不一致", output.getvalue())
 
     @patch("suanniao.cli.time.sleep", return_value=None)
     def test_mid_batch_interruption_stops_later_taps_and_recovers(
@@ -397,9 +574,9 @@ class PlayTests(unittest.TestCase):
                 exit_code = play(args)
         self.assertEqual(exit_code, 2)
         self.assertEqual(len(controller.taps), 2)
-        self.assertEqual(controller.dismiss_calls, 1)
+        self.assertEqual(controller.dismiss_calls, 0)
         self.assertIn("批量操作中检测到非棋盘画面", output.getvalue())
-        self.assertIn("已自动点击", output.getvalue())
+        self.assertIn("程序不会自动操作", output.getvalue())
 
     @patch("suanniao.cli.time.sleep", return_value=None)
     def test_failed_move_stops_batch_and_clears_stale_selection(
@@ -446,7 +623,7 @@ class PlayTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertEqual(len(controller.taps), 2)
-        self.assertGreaterEqual(len(controller.clear_selection_calls), 2)
+        self.assertEqual(len(controller.clear_selection_calls), 2)
         self.assertIn("实际棋盘与预期不一致", output.getvalue())
 
     def test_play_defaults_favor_fast_rolling_batches(self) -> None:
@@ -459,6 +636,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(args.move_wait, 0.30)
         self.assertEqual(args.elimination_wait, 0.55)
         self.assertEqual(args.capture_interval, 0.10)
+        self.assertEqual(args.no_move_confirmations, 2)
 
 
 if __name__ == "__main__":

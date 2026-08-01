@@ -82,7 +82,7 @@ class StableCaptureMixin:
             game_before = before[round(0.25 * height) : round(0.84 * height)]
             game_after = after[round(0.25 * height) : round(0.84 * height)]
             difference = np.abs(
-                game_before.astype(float) - game_after.astype(float)
+                game_before.astype(np.int16) - game_after.astype(np.int16)
             ).mean()
             if difference <= difference_threshold:
                 return current
@@ -166,6 +166,8 @@ class WdaController(StableCaptureMixin):
     _owns_session: bool = field(init=False, default=False)
     _last_screenshot_size: tuple[int, int] | None = field(init=False, default=None)
     _last_window_rect: tuple[float, float] | None = field(init=False, default=None)
+    _screenshot_endpoint: str | None = field(init=False, default=None)
+    _tap_strategy: str | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
@@ -257,9 +259,17 @@ class WdaController(StableCaptureMixin):
         session_id = self._ensure_session()
         last_error: WdaError | None = None
         result: dict[str, Any] | None = None
-        for path in (f"/session/{session_id}/screenshot", "/screenshot"):
+        candidates = (f"/session/{session_id}/screenshot", "/screenshot")
+        paths = (
+            (self._screenshot_endpoint,)
+            + tuple(path for path in candidates if path != self._screenshot_endpoint)
+            if self._screenshot_endpoint is not None
+            else candidates
+        )
+        for path in paths:
             try:
                 result = self._request_json("GET", path)
+                self._screenshot_endpoint = path
                 break
             except WdaError as exc:
                 last_error = exc
@@ -278,8 +288,12 @@ class WdaController(StableCaptureMixin):
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         except Exception as exc:
             raise WdaError("WebDriverAgent returned an invalid screenshot") from exc
+        if (
+            self._last_screenshot_size is not None
+            and self._last_screenshot_size != image.size
+        ):
+            self._last_window_rect = None
         self._last_screenshot_size = image.size
-        self._last_window_rect = None
         return image
 
     def _window_size(self) -> tuple[float, float]:
@@ -312,14 +326,6 @@ class WdaController(StableCaptureMixin):
     def _tap_viewport(self, tap_x: float, tap_y: float) -> None:
         session_id = self._ensure_session()
         tap_payload = {"x": tap_x, "y": tap_y}
-        try:
-            self._request_json(
-                "POST", f"/session/{session_id}/wda/tap/0", tap_payload
-            )
-            return
-        except WdaError:
-            pass
-
         actions = {
             "actions": [
                 {
@@ -341,13 +347,33 @@ class WdaController(StableCaptureMixin):
                 }
             ]
         }
-        try:
-            self._request_json(
-                "POST", f"/session/{session_id}/actions", actions
-            )
+        strategies = ("session-wda", "actions", "global-wda")
+        ordered = (
+            (self._tap_strategy,)
+            + tuple(item for item in strategies if item != self._tap_strategy)
+            if self._tap_strategy is not None
+            else strategies
+        )
+        last_error: WdaError | None = None
+        for strategy in ordered:
+            try:
+                if strategy == "session-wda":
+                    self._request_json(
+                        "POST", f"/session/{session_id}/wda/tap/0", tap_payload
+                    )
+                elif strategy == "actions":
+                    self._request_json(
+                        "POST", f"/session/{session_id}/actions", actions
+                    )
+                else:
+                    self._request_json("POST", "/wda/tap/0", tap_payload)
+            except WdaError as exc:
+                last_error = exc
+                continue
+            self._tap_strategy = strategy
             return
-        except WdaError:
-            self._request_json("POST", "/wda/tap/0", tap_payload)
+        assert last_error is not None
+        raise last_error
 
     def tap(self, x: int, y: int) -> None:
         tap_x, tap_y = self._screenshot_to_viewport(x, y)
@@ -416,6 +442,10 @@ class WdaController(StableCaptureMixin):
         session_id = self.session_id
         self.session_id = None
         self._owns_session = False
+        self._screenshot_endpoint = None
+        self._tap_strategy = None
+        self._last_screenshot_size = None
+        self._last_window_rect = None
         try:
             self._request_json("DELETE", f"/session/{session_id}")
         except WdaError:

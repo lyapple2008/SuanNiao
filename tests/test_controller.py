@@ -101,6 +101,100 @@ class WdaControllerTests(unittest.TestCase):
             [{"x": 50, "y": 100}, {"x": 25, "y": 50}],
         )
 
+    def test_window_size_is_reused_while_screenshot_size_is_unchanged(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/screenshot":
+                return {"value": screenshot}
+            if path == "/session/session-1/window/rect":
+                return {"value": {"width": 100, "height": 200}}
+            if path == "/session/session-1/wda/tap/0":
+                return {"value": None}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            controller.capture()
+            controller.tap(150, 300)
+            controller.capture()
+            controller.tap(150, 300)
+
+        window_requests = [
+            request for request in requests if request[1].endswith("/window/rect")
+        ]
+        self.assertEqual(len(window_requests), 1)
+
+    def test_screenshot_fallback_endpoint_is_cached(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/screenshot":
+                raise WdaError("session screenshot unavailable")
+            if path == "/screenshot":
+                return {"value": screenshot}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            controller.capture()
+            controller.capture()
+
+        self.assertEqual(
+            [path for _method, path, _payload in requests],
+            ["/session/session-1/screenshot", "/screenshot", "/screenshot"],
+        )
+
+    def test_tap_fallback_strategy_is_cached(self) -> None:
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/window/rect":
+                return {"value": {"width": 100, "height": 200}}
+            if path == "/session/session-1/wda/tap/0":
+                raise WdaError("WDA tap unavailable")
+            if path == "/session/session-1/actions":
+                return {"value": None}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            controller.tap(10, 20)
+            controller.tap(30, 40)
+
+        failed_primary = [
+            request
+            for request in requests
+            if request[1] == "/session/session-1/wda/tap/0"
+        ]
+        action_requests = [
+            request
+            for request in requests
+            if request[1] == "/session/session-1/actions"
+        ]
+        self.assertEqual(len(failed_primary), 1)
+        self.assertEqual(len(action_requests), 2)
+
     def test_invalid_wda_url_is_rejected(self) -> None:
         with self.assertRaises(WdaError):
             WdaController(base_url="127.0.0.1:8100")

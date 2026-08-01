@@ -110,11 +110,62 @@ def _save_play_screenshot(
     filename: str,
     extra_directory: str | None,
 ) -> None:
-    screenshot.save(run_directory / filename)
+    screenshot.save(run_directory / filename, compress_level=1)
     if extra_directory:
         directory = Path(extra_directory)
         directory.mkdir(parents=True, exist_ok=True)
-        screenshot.save(directory / filename)
+        screenshot.save(directory / filename, compress_level=1)
+
+
+def _prepare_manual_start(controller: DeviceController) -> None:
+    print("正在预热设备会话和截图通道…")
+    controller.capture()
+    try:
+        input(
+            "\a准备完成。请现在开始游戏，然后回到终端按 Enter，"
+            "程序将立即开始识别和操作："
+        )
+    except EOFError as exc:
+        raise RuntimeError("等待开始确认失败：当前输入不是交互式终端") from exc
+
+
+def _write_deferred_debug_reports(
+    recognizer: BoardRecognizer,
+    run_directory: Path,
+) -> None:
+    screenshots = sorted(run_directory.glob("turn-???.png"))
+    if not screenshots:
+        return
+
+    print(f"\n游戏操作已结束，正在生成 {len(screenshots)} 份聚类调试报告…")
+    failures = 0
+    for screenshot in screenshots:
+        debug_directory = run_directory / f"{screenshot.stem}-clusters"
+        try:
+            recognizer.read(screenshot, debug_dir=debug_directory)
+        except RecognitionError as exc:
+            failures += 1
+            print(f"warning: 无法生成 {screenshot.name} 的调试报告：{exc}")
+    if failures:
+        print(f"调试报告生成完成，其中 {failures} 份失败。")
+    else:
+        print("聚类调试报告生成完成。")
+
+
+def _recognition_summary(result: RecognitionResult) -> tuple[int, int]:
+    return len(result.branches), result.state.bird_count
+
+
+def _is_plausible_board_transition(
+    previous: tuple[int, int],
+    current: tuple[int, int],
+) -> bool:
+    previous_branches, previous_birds = previous
+    current_branches, current_birds = current
+    return current == previous or (
+        current_branches == previous_branches - 1
+        and current_birds == previous_birds - 4
+    )
 
 
 def _capture_game_board(
@@ -123,6 +174,7 @@ def _capture_game_board(
     args: argparse.Namespace,
     run_directory: Path,
     turn_name: str,
+    previous_summary: tuple[int, int] | None = None,
 ) -> tuple[Image.Image, RecognitionResult]:
     deadline = time.monotonic() + args.interruption_timeout
     interruption_index = 0
@@ -134,37 +186,77 @@ def _capture_game_board(
             interval=args.capture_interval,
             attempts=args.capture_attempts,
         )
-        if recognizer.has_game_board(screenshot):
+        recognition: RecognitionResult | None = None
+        has_board = recognizer.has_game_board(screenshot)
+        if has_board:
+            debug_directory = (
+                run_directory / f"{turn_name}-clusters"
+                if args.debug_reports == "live"
+                else None
+            )
+            try:
+                recognition = recognizer.read(
+                    screenshot,
+                    debug_dir=debug_directory,
+                )
+            except RecognitionError:
+                _save_play_screenshot(
+                    screenshot,
+                    run_directory,
+                    f"{turn_name}.png",
+                    args.save_frames,
+                )
+                raise
+
+        transition_rejected = (
+            recognition is not None
+            and previous_summary is not None
+            and not _is_plausible_board_transition(
+                previous_summary,
+                _recognition_summary(recognition),
+            )
+        )
+        if transition_rejected:
+            has_board = False
+
+        if has_board:
             _save_play_screenshot(
                 screenshot,
                 run_directory,
                 f"{turn_name}.png",
                 args.save_frames,
             )
-            recognition = recognizer.read(
-                screenshot,
-                debug_dir=run_directory / f"{turn_name}-clusters",
-            )
+            assert recognition is not None
             if waiting:
                 print("已重新检测到游戏棋盘，继续操作。")
             return screenshot, recognition
 
         waiting = True
         interruption_index += 1
+        filename = (
+            f"{turn_name}-suspicious-board-{interruption_index:03d}.png"
+            if transition_rejected
+            else f"{turn_name}-interruption-{interruption_index:03d}.png"
+        )
         _save_play_screenshot(
             screenshot,
             run_directory,
-            f"{turn_name}-interruption-{interruption_index:03d}.png",
+            filename,
             args.save_frames,
         )
-        dismissed = not args.dry_run and controller.dismiss_interruption()
-        if dismissed:
-            print("未检测到正常棋盘，找到关闭/跳过按钮，已自动点击。")
-        elif not manual_prompted:
-            print(
-                "未检测到正常棋盘，也没有找到可用的关闭按钮。"
-                "请手动关闭广告窗口，程序会等待棋盘恢复。"
-            )
+        if not manual_prompted:
+            if transition_rejected:
+                assert recognition is not None and previous_summary is not None
+                print(
+                    "识别结果与上一轮变化幅度不合理："
+                    f"{previous_summary} -> {_recognition_summary(recognition)}。"
+                    "可能出现广告或遮罩；程序不会自动操作，将等待棋盘恢复。"
+                )
+            else:
+                print(
+                    "未检测到正常棋盘，可能出现广告或其他中断画面。"
+                    "程序不会自动操作，请手动处理；程序会等待棋盘恢复。"
+                )
             manual_prompted = True
 
         if time.monotonic() >= deadline:
@@ -305,6 +397,8 @@ def play(args: argparse.Namespace) -> int:
         raise ValueError("--interruption-timeout must be positive")
     if args.interruption_poll_interval <= 0:
         raise ValueError("--interruption-poll-interval must be positive")
+    if args.no_move_confirmations < 1:
+        raise ValueError("--no-move-confirmations must be positive")
 
     controller = _controller(args)
     recognizer = _recognizer(args)
@@ -313,9 +407,17 @@ def play(args: argparse.Namespace) -> int:
     print(f"run_debug_dir={run_directory}")
     previous_key: tuple[tuple[int, ...], ...] | None = None
     expected_key: tuple[Branch, ...] | None = None
+    expected_summary: tuple[int, int] | None = None
+    previous_summary: tuple[int, int] | None = None
+    no_move_key: tuple[Branch, ...] | None = None
+    no_move_confirmations = 0
+    selection_reset_required = True
     unchanged = 0
 
     try:
+        if args.wait_for_start:
+            _prepare_manual_start(controller)
+
         for turn in range(1, args.max_turns + 1):
             turn_name = f"turn-{turn:03d}"
             _screenshot, recognition = _capture_game_board(
@@ -324,7 +426,10 @@ def play(args: argparse.Namespace) -> int:
                 args,
                 run_directory,
                 turn_name,
+                previous_summary,
             )
+            current_summary = _recognition_summary(recognition)
+            previous_summary = current_summary
             print(f"\nTurn {turn}")
             print(_format_board(recognition))
             if recognition.state.is_finished:
@@ -332,7 +437,12 @@ def play(args: argparse.Namespace) -> int:
                 return 0
 
             actual_physical_key = _physical_state_key(recognition.state)
-            if expected_key is not None and actual_physical_key != expected_key:
+            state_mismatch = (
+                expected_key is not None and actual_physical_key != expected_key
+            ) or (
+                expected_summary is not None and current_summary != expected_summary
+            )
+            if state_mismatch:
                 print(
                     "检测到实际棋盘与上一批预期不一致；可能有点击未生效，"
                     "清除残留选择并按当前截图重新规划。"
@@ -340,14 +450,14 @@ def play(args: argparse.Namespace) -> int:
                 previous_key = None
                 unchanged = 0
             expected_key = None
+            expected_summary = None
 
-            # A failed destination tap can leave the previous source bird raised
-            # and selected. A neutral center-lane tap is harmless when nothing is
-            # selected and prevents the next source tap from being interpreted as
-            # the destination of that stale selection.
-            if not args.dry_run:
+            # Reset once at startup and after uncertain device state. Successful
+            # batches do not need another neutral tap before every replan.
+            if (state_mismatch or selection_reset_required) and not args.dry_run:
                 controller.clear_selection(recognition.image_size)
                 time.sleep(args.tap_gap)
+                selection_reset_required = False
 
             key = recognition.state.canonical_key()
             unchanged = unchanged + 1 if key == previous_key else 0
@@ -362,8 +472,23 @@ def play(args: argparse.Namespace) -> int:
             batch = _next_move_batch(solution.moves, args.moves_per_plan)
             print(_format_solution(solution, len(batch)))
             if not solution.moves:
-                print("No improving move was found; stopping without making a random tap.")
+                if actual_physical_key == no_move_key:
+                    no_move_confirmations += 1
+                else:
+                    no_move_key = actual_physical_key
+                    no_move_confirmations = 1
+                if no_move_confirmations < args.no_move_confirmations:
+                    print(
+                        "未找到可执行移动，先不退出；将重新截图确认"
+                        f"（{no_move_confirmations}/{args.no_move_confirmations}）。"
+                    )
+                    continue
+                print(
+                    "连续稳定截图均未找到可执行移动，停止且不进行随机点击。"
+                )
                 return 2
+            no_move_key = None
+            no_move_confirmations = 0
 
             if args.dry_run:
                 for number, move in enumerate(batch, 1):
@@ -386,6 +511,7 @@ def play(args: argparse.Namespace) -> int:
                             args.save_frames,
                         )
                         print("批量操作中检测到非棋盘画面，暂停当前方案。")
+                        selection_reset_required = True
                         interrupted = True
                         break
                     try:
@@ -409,6 +535,7 @@ def play(args: argparse.Namespace) -> int:
                         )
                         controller.clear_selection(quick_screen.size)
                         time.sleep(args.tap_gap)
+                        selection_reset_required = False
                         interrupted = True
                         break
 
@@ -434,20 +561,25 @@ def play(args: argparse.Namespace) -> int:
                 previous_key = None
                 unchanged = 0
                 expected_key = None
+                expected_summary = None
             elif virtual_state.is_finished:
                 print("Planned moves eliminated all remaining birds: game finished.")
                 return 0
             else:
-                expected_key = (
-                    None
-                    if batch and batch[-1].completes_branch
-                    else _physical_state_key(virtual_state)
+                eliminated = bool(batch and batch[-1].completes_branch)
+                expected_key = None if eliminated else _physical_state_key(virtual_state)
+                expected_summary = (
+                    (current_summary[0] - 1, current_summary[1] - 4)
+                    if eliminated
+                    else current_summary
                 )
 
         print(f"Stopped after --max-turns={args.max_turns}.")
         return 2
     finally:
         controller.close()
+        if args.debug_reports == "deferred":
+            _write_deferred_debug_reports(recognizer, run_directory)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -524,6 +656,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--wda-session-id",
         help="reuse an existing WebDriverAgent session instead of creating one",
     )
+    play_parser.add_argument(
+        "--wait-for-start",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "warm the device session and screenshot channel, then wait for Enter "
+            "before the first game capture"
+        ),
+    )
+    play_parser.add_argument(
+        "--debug-reports",
+        choices=("live", "deferred", "off"),
+        default="live",
+        help=(
+            "write cluster reports during play, after play, or not at all; "
+            "default: live"
+        ),
+    )
     play_parser.add_argument("--tap-gap", type=float, default=0.12)
     play_parser.add_argument("--move-wait", type=float, default=0.30)
     play_parser.add_argument(
@@ -561,6 +711,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.8,
         help="seconds between interruption recovery checks; default: 0.8",
+    )
+    play_parser.add_argument(
+        "--no-move-confirmations",
+        type=int,
+        default=2,
+        help="stable no-move screenshots required before stopping; default: 2",
     )
     play_parser.add_argument("--max-turns", type=int, default=100)
     play_parser.add_argument("--save-frames")

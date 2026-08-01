@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class VisionTests(unittest.TestCase):
     def test_game_board_check_allows_two_remaining_branches_on_one_side(self) -> None:
         recognizer = BoardRecognizer()
-        screenshot = Image.new("RGB", (100, 200), "black")
+        screenshot = Image.new("RGB", (100, 200), (163, 219, 254))
 
         with patch.object(
             recognizer,
@@ -32,6 +32,19 @@ class VisionTests(unittest.TestCase):
             return_value={"left": [], "right": []},
         ):
             self.assertFalse(recognizer.has_game_board(screenshot))
+
+    def test_game_board_check_rejects_dimmed_modal_overlay(self) -> None:
+        recognizer = BoardRecognizer()
+        screenshot = Image.new("RGB", (100, 200), (49, 66, 76))
+
+        with patch.object(
+            recognizer,
+            "_detect_branch_rows",
+            return_value={"left": [80], "right": [120]},
+        ) as detect_rows:
+            self.assertFalse(recognizer.has_game_board(screenshot))
+
+        detect_rows.assert_not_called()
 
     def test_reference_screenshot(self) -> None:
         result = BoardRecognizer().read(ROOT / "game.jpg")
@@ -68,7 +81,7 @@ class VisionTests(unittest.TestCase):
             )
             self.assertEqual(
                 report["occupancy_constraint"],
-                "two-cluster-presence,prefix-per-branch",
+                "two-cluster-presence,prefix-per-branch,total-capacity-multiple",
             )
             self.assertEqual(
                 report["presence_clustering"]["method"],
@@ -124,6 +137,48 @@ class VisionTests(unittest.TestCase):
         )
 
         self.assertEqual(selection.occupancies, (4, 4, 0))
+
+    def test_presence_clustering_rejects_fallen_leaf_in_outer_slot(self) -> None:
+        recognizer = BoardRecognizer(presence_threshold=0.20)
+        bird = _PresenceEvidence(
+            0.7415,
+            0.8224,
+            0.7522,
+            0.7289,
+            0.9498,
+            0.7668,
+        )
+        empty = _PresenceEvidence(
+            0.0012,
+            0.0005,
+            0.0005,
+            0.0005,
+            0.0054,
+            0.1020,
+        )
+        fallen_leaf = _PresenceEvidence(
+            0.365293,
+            0.335849,
+            0.335849,
+            0.335849,
+            0.792453,
+            0.609589,
+        )
+        expected = (3, 2, 3, 3, 3, 4, 2, 4, 4, 4)
+        rows = tuple(
+            tuple(
+                fallen_leaf if branch_index == 0 and slot_index == 3 else bird
+                if slot_index < occupied
+                else empty
+                for slot_index in range(4)
+            )
+            for branch_index, occupied in enumerate(expected)
+        )
+
+        selection = recognizer._select_occupancies(rows)
+
+        self.assertEqual(selection.occupancies, expected)
+        self.assertEqual(sum(selection.occupancies) % recognizer.capacity, 0)
 
     def test_presence_evidence_rejects_thin_wood_strip(self) -> None:
         rgb = np.full((1478, 680, 3), (155, 215, 240), dtype=np.uint8)

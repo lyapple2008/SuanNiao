@@ -114,12 +114,42 @@ class BoardRecognizer:
             if isinstance(source, Image.Image)
             else Image.open(source).convert("RGB")
         )
-        rows = self._detect_branch_rows(np.asarray(image))
+        rgb = np.asarray(image)
+        if self._board_background_luminance(rgb) < 120.0:
+            return False
+
+        rows = self._detect_branch_rows(rgb)
         # Near the end of a level, all remaining branches can be on the same
         # side. Two detected branch rows are enough to distinguish that valid
         # late-game board from the branch-free interruption screens seen in
         # ads and level overlays.
         return sum(map(len, rows.values())) >= 2
+
+    @staticmethod
+    def _board_background_luminance(rgb: np.ndarray) -> float:
+        """Sample sky-only areas that remain visible behind modal overlays."""
+
+        height, width = rgb.shape[:2]
+        regions = (
+            rgb[
+                round(0.12 * height) : round(0.22 * height),
+                round(0.15 * width) : round(0.35 * width),
+            ],
+            rgb[
+                round(0.12 * height) : round(0.22 * height),
+                round(0.65 * width) : round(0.85 * width),
+            ],
+            rgb[
+                round(0.22 * height) : round(0.30 * height),
+                round(0.58 * width) : round(0.78 * width),
+            ],
+        )
+        samples = [
+            float(np.median(region.mean(axis=2)))
+            for region in regions
+            if region.size
+        ]
+        return float(np.median(samples)) if samples else 0.0
 
     def read(
         self,
@@ -642,11 +672,38 @@ class BoardRecognizer:
             (),
         )
 
+    def _capacity_constrained_occupancies(
+        self,
+        cost_rows: list[list[float]],
+    ) -> tuple[int, ...]:
+        states: dict[int, tuple[float, tuple[int, ...]]] = {0: (0.0, ())}
+        for costs in cost_rows:
+            next_states: dict[int, tuple[float, tuple[int, ...]]] = {}
+            for total, (previous_cost, previous_occupancies) in states.items():
+                for occupied, row_cost in enumerate(costs):
+                    next_total = total + occupied
+                    candidate = (
+                        previous_cost + row_cost,
+                        previous_occupancies + (occupied,),
+                    )
+                    existing = next_states.get(next_total)
+                    if existing is None or candidate[0] < existing[0]:
+                        next_states[next_total] = candidate
+            states = next_states
+
+        capacity = max(self.capacity, 1)
+        valid = [
+            candidate
+            for total, candidate in states.items()
+            if total % capacity == 0
+        ]
+        return min(valid, key=lambda candidate: candidate[0])[1]
+
     def _select_occupancies(
         self,
         evidence_rows: tuple[tuple[_PresenceEvidence, ...], ...],
     ) -> _OccupancySelection:
-        """Cluster all slots into occupied/empty groups, then choose prefixes."""
+        """Cluster slots, then choose capacity-valid occupied prefixes."""
 
         if not evidence_rows:
             return _OccupancySelection((), (), "no-slots", None, (), (), ())
@@ -690,7 +747,7 @@ class BoardRecognizer:
             return self._threshold_occupancy_selection(evidence_rows)
 
         label_rows: list[tuple[int, ...]] = []
-        occupancies: list[int] = []
+        cost_rows: list[list[float]] = []
         cursor = 0
         for row in evidence_rows:
             row_length = len(row)
@@ -712,10 +769,12 @@ class BoardRecognizer:
                     for vector, cluster in zip(row_matrix, expected_clusters)
                 )
                 costs.append(cost)
-            occupancies.append(min(range(row_length + 1), key=costs.__getitem__))
+            cost_rows.append(costs)
+
+        occupancies = self._capacity_constrained_occupancies(cost_rows)
 
         return _OccupancySelection(
-            tuple(occupancies),
+            occupancies,
             tuple(label_rows),
             "two-cluster-presence",
             empty_cluster,
@@ -1252,7 +1311,9 @@ class BoardRecognizer:
                 else None
             ),
             "presence_threshold": self.presence_threshold,
-            "occupancy_constraint": "two-cluster-presence,prefix-per-branch",
+            "occupancy_constraint": (
+                "two-cluster-presence,prefix-per-branch,total-capacity-multiple"
+            ),
             "presence_clustering": {
                 "method": occupancy_selection.method,
                 "empty_cluster": occupancy_selection.empty_cluster,
