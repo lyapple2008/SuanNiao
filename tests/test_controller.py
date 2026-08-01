@@ -69,6 +69,38 @@ class WdaControllerTests(unittest.TestCase):
 
         self.assertEqual(requests, [])
 
+    def test_tap_pair_uses_two_scaled_wda_tap_requests(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if method == "GET" and path == "/session/session-1/screenshot":
+                return {"value": screenshot}
+            if method == "GET" and path == "/session/session-1/window/rect":
+                return {"value": {"width": 100, "height": 200}}
+            if method == "POST" and path == "/session/session-1/wda/tap/0":
+                return {"value": None}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(session_id="session-1")
+            controller.capture()
+            controller.tap_pair((150, 300), (75, 150), 0.06)
+
+        tap_requests = [
+            request for request in requests if request[1].endswith("/wda/tap/0")
+        ]
+        self.assertEqual(
+            [request[2] for request in tap_requests],
+            [{"x": 50, "y": 100}, {"x": 25, "y": 50}],
+        )
+
     def test_invalid_wda_url_is_rejected(self) -> None:
         with self.assertRaises(WdaError):
             WdaController(base_url="127.0.0.1:8100")

@@ -8,3 +8,6 @@ frames/
 .ios/*
 !.ios/wda.env.example
 tools/WebDriverAgent/
+examples/
+.vscode/
+.ios/

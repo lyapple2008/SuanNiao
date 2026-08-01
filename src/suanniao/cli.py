@@ -15,7 +15,7 @@ from .controller import (
     DeviceError,
     WdaController,
 )
-from .model import REMOVED, Branch, Move
+from .model import REMOVED, BoardState, Branch, Move
 from .solution_html import write_solution_animation
 from .solver import BeamSolver, SolveResult
 from .vision import BoardRecognizer, DetectedBranch, RecognitionError, RecognitionResult
@@ -184,6 +184,18 @@ def _click_point_for_contents(
     return round(sum(xs) / len(xs)), branch.branch_y - 2
 
 
+def _destination_click_point(
+    branch: DetectedBranch,
+    source: tuple[int, int],
+) -> tuple[int, int]:
+    candidates = tuple((x, branch.branch_y - 2) for x, _y in branch.slots)
+    return max(
+        candidates,
+        key=lambda point: (point[0] - source[0]) ** 2
+        + (point[1] - source[1]) ** 2,
+    )
+
+
 def _next_move_batch(moves: tuple[Move, ...], limit: int) -> tuple[Move, ...]:
     """Stop a fast batch immediately after its first branch elimination."""
 
@@ -193,6 +205,26 @@ def _next_move_batch(moves: tuple[Move, ...], limit: int) -> tuple[Move, ...]:
         if move.completes_branch:
             break
     return tuple(batch)
+
+
+def _physical_state_key(state: BoardState) -> tuple[Branch, ...]:
+    """Preserve branch positions while ignoring arbitrary cluster label ids."""
+
+    labels: dict[int, int] = {}
+    next_label = 0
+    normalized: list[Branch] = []
+    for branch in state.branches:
+        if branch == REMOVED:
+            normalized.append(REMOVED)
+            continue
+        values: list[int] = []
+        for bird in branch:
+            if bird not in labels:
+                labels[bird] = next_label
+                next_label += 1
+            values.append(labels[bird])
+        normalized.append(tuple(values))
+    return tuple(normalized)
 
 
 def analyze(args: argparse.Namespace) -> int:
@@ -280,6 +312,7 @@ def play(args: argparse.Namespace) -> int:
     run_directory = _create_run_directory()
     print(f"run_debug_dir={run_directory}")
     previous_key: tuple[tuple[int, ...], ...] | None = None
+    expected_key: tuple[Branch, ...] | None = None
     unchanged = 0
 
     try:
@@ -297,6 +330,24 @@ def play(args: argparse.Namespace) -> int:
             if recognition.state.is_finished:
                 print("No birds remain: game finished.")
                 return 0
+
+            actual_physical_key = _physical_state_key(recognition.state)
+            if expected_key is not None and actual_physical_key != expected_key:
+                print(
+                    "检测到实际棋盘与上一批预期不一致；可能有点击未生效，"
+                    "清除残留选择并按当前截图重新规划。"
+                )
+                previous_key = None
+                unchanged = 0
+            expected_key = None
+
+            # A failed destination tap can leave the previous source bird raised
+            # and selected. A neutral center-lane tap is harmless when nothing is
+            # selected and prevents the next source tap from being interpreted as
+            # the destination of that stale selection.
+            if not args.dry_run:
+                controller.clear_selection(recognition.image_size)
+                time.sleep(args.tap_gap)
 
             key = recognition.state.canonical_key()
             unchanged = unchanged + 1 if key == previous_key else 0
@@ -337,22 +388,43 @@ def play(args: argparse.Namespace) -> int:
                         print("批量操作中检测到非棋盘画面，暂停当前方案。")
                         interrupted = True
                         break
+                    try:
+                        observed = recognizer.read(quick_screen)
+                    except RecognitionError:
+                        observed = None
+                    if (
+                        observed is None
+                        or _physical_state_key(observed.state)
+                        != _physical_state_key(virtual_state)
+                    ):
+                        _save_play_screenshot(
+                            quick_screen,
+                            run_directory,
+                            f"{turn_name}-mid-batch-state-mismatch.png",
+                            args.save_frames,
+                        )
+                        print(
+                            "批量操作中检测到实际棋盘与预期不一致，"
+                            "停止旧方案并清除残留选择。"
+                        )
+                        controller.clear_selection(quick_screen.size)
+                        time.sleep(args.tap_gap)
+                        interrupted = True
+                        break
 
                 source = _click_point_for_contents(
                     recognition.branches[move.source],
                     virtual_state.branches[move.source],
                 )
-                destination = _click_point_for_contents(
+                destination = _destination_click_point(
                     recognition.branches[move.destination],
-                    virtual_state.branches[move.destination],
+                    source,
                 )
                 print(
                     f"batch {batch_index + 1}/{len(batch)}: "
                     f"tap {source} -> {destination}"
                 )
-                controller.tap(*source)
-                time.sleep(args.tap_gap)
-                controller.tap(*destination)
+                controller.tap_pair(source, destination, args.tap_gap)
                 virtual_state = virtual_state.apply(move)
                 time.sleep(
                     args.elimination_wait if move.completes_branch else args.move_wait
@@ -361,9 +433,16 @@ def play(args: argparse.Namespace) -> int:
             if interrupted:
                 previous_key = None
                 unchanged = 0
+                expected_key = None
             elif virtual_state.is_finished:
                 print("Planned moves eliminated all remaining birds: game finished.")
                 return 0
+            else:
+                expected_key = (
+                    None
+                    if batch and batch[-1].completes_branch
+                    else _physical_state_key(virtual_state)
+                )
 
         print(f"Stopped after --max-turns={args.max_turns}.")
         return 2
@@ -445,13 +524,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--wda-session-id",
         help="reuse an existing WebDriverAgent session instead of creating one",
     )
-    play_parser.add_argument("--tap-gap", type=float, default=0.08)
-    play_parser.add_argument("--move-wait", type=float, default=0.40)
+    play_parser.add_argument("--tap-gap", type=float, default=0.12)
+    play_parser.add_argument("--move-wait", type=float, default=0.30)
     play_parser.add_argument(
         "--elimination-wait",
         type=float,
-        default=0.65,
-        help="wait after a move that eliminates a branch; default: 0.65",
+        default=0.55,
+        help="wait after a move that eliminates a branch; default: 0.55",
     )
     play_parser.add_argument(
         "--moves-per-plan",
@@ -462,8 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     play_parser.add_argument(
         "--capture-interval",
         type=float,
-        default=0.12,
-        help="stable screenshot comparison interval; default: 0.12",
+        default=0.10,
+        help="stable screenshot comparison interval; default: 0.10",
     )
     play_parser.add_argument(
         "--capture-attempts",
@@ -486,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
     play_parser.add_argument("--max-turns", type=int, default=100)
     play_parser.add_argument("--save-frames")
     play_parser.add_argument("--dry-run", action="store_true")
-    play_parser.set_defaults(handler=play, beam_width=500, time_limit=8.0)
+    play_parser.set_defaults(handler=play, beam_width=120, time_limit=2.0)
     return parser
 
 

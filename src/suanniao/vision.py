@@ -76,6 +76,18 @@ class _PresenceEvidence:
     bird_fraction: float
     largest_component_fraction: float
     largest_component_height: float
+    largest_component_fill: float
+
+
+@dataclass(frozen=True, slots=True)
+class _OccupancySelection:
+    occupancies: tuple[int, ...]
+    slot_clusters: tuple[tuple[int, ...], ...]
+    method: str
+    empty_cluster: int | None
+    centers: tuple[tuple[float, ...], ...]
+    mean_scores: tuple[float, ...]
+    sizes: tuple[int, ...]
 
 
 class BoardRecognizer:
@@ -128,31 +140,58 @@ class BoardRecognizer:
         height, width = rgb.shape[:2]
         background_color = self._background_color(rgb)
         rows = self._detect_branch_rows(rgb)
+        layout_scale = self._layout_scale(rows, height)
+        branch_bounds = {
+            (side, branch_y): self._branch_x_bounds(rgb, side, branch_y)
+            for side in ("left", "right")
+            for branch_y in rows[side]
+        }
+        average_branch_length = self._average_branch_length(
+            tuple(branch_bounds.values()),
+            width,
+            scale=layout_scale,
+        )
         records: list[dict[str, object]] = []
 
         for side in ("left", "right"):
             for branch_y in rows[side]:
-                bird_y = round(branch_y - 0.0195 * height)
-                slots = self._slot_centers(side, bird_y, width)
+                bird_y = round(branch_y - 0.0195 * height * layout_scale)
+                bounds = branch_bounds[(side, branch_y)]
+                slots = self._slot_centers(
+                    side,
+                    bird_y,
+                    width,
+                    branch_bounds=bounds,
+                    branch_length=average_branch_length,
+                )
                 presence_evidence = tuple(
-                    self._presence_evidence(rgb, x, y) for x, y in slots
+                    self._presence_evidence(rgb, x, y, scale=layout_scale)
+                    for x, y in slots
                 )
                 records.append(
                     {
                         "side": side,
                         "branch_y": branch_y,
                         "bird_y": bird_y,
+                        "branch_bounds": bounds,
+                        "branch_length": average_branch_length,
                         "slots": slots,
+                        "layout_scale": layout_scale,
                         "presence_evidence": presence_evidence,
                     }
                 )
 
-        occupancies = self._select_occupancies(
+        occupancy_selection = self._select_occupancies(
             tuple(
-                tuple(evidence.score for evidence in record["presence_evidence"])
+                record["presence_evidence"]  # type: ignore[misc]
                 for record in records
             )
         )
+        occupancies = occupancy_selection.occupancies
+        for record, slot_clusters in zip(
+            records, occupancy_selection.slot_clusters
+        ):
+            record["presence_clusters"] = slot_clusters
         features: list[np.ndarray] = []
         bird_crops: list[Image.Image] = []
         for record, occupied in zip(records, occupancies):
@@ -174,6 +213,7 @@ class BoardRecognizer:
                     height,
                     background_color,
                     has_outer_neighbor=slot_index < occupied - 1,
+                    scale=layout_scale,
                 )
                 bird_crops.append(crop)
                 features.append(
@@ -196,7 +236,14 @@ class BoardRecognizer:
         if not records:
             if debug_path is not None:
                 self._write_debug_report(
-                    image, rows, records, bird_crops, (), None, debug_path
+                    image,
+                    rows,
+                    records,
+                    bird_crops,
+                    occupancy_selection,
+                    (),
+                    None,
+                    debug_path,
                 )
             raise RecognitionError(
                 self._with_debug_hint(
@@ -225,14 +272,28 @@ class BoardRecognizer:
             )
             if debug_path is not None:
                 self._write_debug_report(
-                    image, rows, records, bird_crops, (), None, debug_path
+                    image,
+                    rows,
+                    records,
+                    bird_crops,
+                    occupancy_selection,
+                    (),
+                    None,
+                    debug_path,
                 )
             return result
 
         if len(features) % self.capacity:
             if debug_path is not None:
                 self._write_debug_report(
-                    image, rows, records, bird_crops, (), None, debug_path
+                    image,
+                    rows,
+                    records,
+                    bird_crops,
+                    occupancy_selection,
+                    (),
+                    None,
+                    debug_path,
                 )
             raise RecognitionError(
                 self._with_debug_hint(
@@ -251,6 +312,7 @@ class BoardRecognizer:
                 rows,
                 records,
                 bird_crops,
+                occupancy_selection,
                 candidates,
                 selected,
                 debug_path,
@@ -357,24 +419,132 @@ class BoardRecognizer:
 
         return result
 
+    @staticmethod
+    def _branch_x_bounds(
+        rgb: np.ndarray,
+        side: Side,
+        branch_y: int,
+    ) -> tuple[int, int]:
+        height, width = rgb.shape[:2]
+        midpoint = width // 2
+        start_x, end_x = (0, midpoint) if side == "left" else (midpoint, width)
+        y_radius = max(3, round(height * 0.003))
+        top = max(0, branch_y - y_radius)
+        bottom = min(height, branch_y + y_radius + 1)
+        wood = BoardRecognizer._wood_mask(rgb[top:bottom, start_x:end_x])
+        column_score = wood.sum(axis=0)
+        threshold = max(1, round((bottom - top) * 0.25))
+        columns = np.flatnonzero(column_score >= threshold)
+        if len(columns) == 0:
+            fallback_length = min(round(0.38 * width), midpoint - 1)
+            return (
+                (0, fallback_length)
+                if side == "left"
+                else (width - fallback_length - 1, width - 1)
+            )
+
+        max_gap = max(2, round(width * 0.008))
+        groups: list[list[int]] = [[int(columns[0])]]
+        for column in columns[1:]:
+            value = int(column)
+            if value - groups[-1][-1] <= max_gap:
+                groups[-1].append(value)
+            else:
+                groups.append([value])
+
+        edge_tolerance = max_gap * 2
+        if side == "left":
+            edge_groups = [group for group in groups if group[0] <= edge_tolerance]
+        else:
+            edge_groups = [
+                group
+                for group in groups
+                if group[-1] >= (end_x - start_x - 1) - edge_tolerance
+            ]
+        branch_group = max(edge_groups or groups, key=len)
+        first_x = start_x + branch_group[0]
+        last_x = start_x + branch_group[-1]
+
+        max_length = max(1, (width - 1) // 2)
+        if last_x - first_x > max_length:
+            if side == "left":
+                last_x = first_x + max_length
+            else:
+                first_x = last_x - max_length
+        return first_x, last_x
+
     def _slot_centers(
-        self, side: Side, bird_y: int, width: int
+        self,
+        side: Side,
+        bird_y: int,
+        width: int,
+        *,
+        branch_bounds: tuple[int, int],
+        branch_length: float,
     ) -> tuple[tuple[int, int], ...]:
-        base = 0.0325 * width if side == "left" else 0.9675 * width
+        base = branch_bounds[0] if side == "left" else branch_bounds[1]
         direction = 1 if side == "left" else -1
-        spacing = 0.0823 * width
+        segment_length = branch_length / self.capacity
         return tuple(
-            (round(base + direction * spacing * index), bird_y)
+            (
+                min(
+                    max(
+                        round(
+                            base
+                            + direction * segment_length * (index + 0.5)
+                        ),
+                        0,
+                    ),
+                    width - 1,
+                ),
+                bird_y,
+            )
             for index in range(self.capacity)
         )
 
+    @staticmethod
+    def _average_branch_length(
+        bounds: tuple[tuple[int, int], ...],
+        width: int,
+        *,
+        scale: float = 1.0,
+    ) -> float:
+        lengths = tuple(
+            end_x - start_x
+            for start_x, end_x in bounds
+            if end_x > start_x
+        )
+        if lengths:
+            return float(np.mean(lengths))
+        return 0.3292 * width * scale
+
+    @staticmethod
+    def _layout_scale(rows: dict[Side, list[int]], height: int) -> float:
+        """Infer the game's discrete sprite zoom from same-side branch spacing."""
+
+        spacings = [
+            following - previous
+            for side_rows in rows.values()
+            for previous, following in zip(side_rows, side_rows[1:])
+        ]
+        if not spacings:
+            return 1.0
+        median_spacing = float(np.median(spacings))
+        nominal_spacing = 0.0468 * height
+        return min(1.35, max(0.90, median_spacing / nominal_spacing))
+
     def _presence_evidence(
-        self, rgb: np.ndarray, x: int, y: int
+        self,
+        rgb: np.ndarray,
+        x: int,
+        y: int,
+        *,
+        scale: float = 1.0,
     ) -> _PresenceEvidence:
         height, width = rgb.shape[:2]
-        half_width = max(12, round(width * 0.032))
-        top = max(0, y - round(height * 0.022))
-        bottom = min(height, y + round(height * 0.008))
+        half_width = max(12, round(width * 0.032 * scale))
+        top = max(0, y - round(height * 0.022 * scale))
+        bottom = min(height, y + round(height * 0.008 * scale))
         left = max(0, x - half_width)
         right = min(width, x + half_width + 1)
         crop_rgb = rgb[top:bottom, left:right]
@@ -397,13 +567,18 @@ class BoardRecognizer:
         )
         largest_area = 0
         largest_height = 0
+        largest_fill = 0.0
         if component_count:
             component_sizes = np.bincount(labels.ravel())[1:]
             largest_label = int(component_sizes.argmax()) + 1
             largest_area = int(component_sizes[largest_label - 1])
-            component_rows = np.where(labels == largest_label)[0]
+            component_rows, component_columns = np.where(labels == largest_label)
             if len(component_rows):
                 largest_height = int(component_rows.max() - component_rows.min() + 1)
+                largest_width = int(
+                    component_columns.max() - component_columns.min() + 1
+                )
+                largest_fill = largest_area / max(largest_width * largest_height, 1)
 
         area = max(int(bird_mask.size), 1)
         roi_height = max(int(bird_mask.shape[0]), 1)
@@ -411,10 +586,11 @@ class BoardRecognizer:
         bird_fraction = float(bird_mask.mean())
         largest_component_fraction = largest_area / area
         largest_component_height = largest_height / roi_height
+        largest_component_shape = largest_component_height * largest_fill
         score = (
             0.55 * bird_fraction
             + 0.25 * largest_component_fraction
-            + 0.20 * largest_component_height
+            + 0.20 * largest_component_shape
         )
         return _PresenceEvidence(
             score,
@@ -422,6 +598,7 @@ class BoardRecognizer:
             bird_fraction,
             largest_component_fraction,
             largest_component_height,
+            largest_fill,
         )
 
     def _threshold_occupancy(self, scores: tuple[float, ...]) -> int:
@@ -432,29 +609,120 @@ class BoardRecognizer:
             occupied += 1
         return occupied
 
-    def _select_occupancies(
-        self, score_rows: tuple[tuple[float, ...], ...]
-    ) -> tuple[int, ...]:
-        """Choose prefix occupancies while enforcing a globally valid bird count."""
+    @staticmethod
+    def _presence_vector(evidence: _PresenceEvidence) -> tuple[float, ...]:
+        return (
+            evidence.score,
+            evidence.foreground_fraction,
+            evidence.bird_fraction,
+            evidence.largest_component_fraction,
+            evidence.largest_component_height,
+            evidence.largest_component_fill,
+        )
 
-        # remainder -> (confidence, occupancies). Each branch can contain only
-        # a prefix of 0..capacity birds from its fixed/base end.
-        states: dict[int, tuple[float, tuple[int, ...]]] = {0: (0.0, ())}
-        for scores in score_rows:
-            next_states: dict[int, tuple[float, tuple[int, ...]]] = {}
-            margins = tuple(score - self.presence_threshold for score in scores)
-            for remainder, (confidence, path) in states.items():
-                for occupied in range(self.capacity + 1):
-                    branch_confidence = sum(margins[:occupied]) - sum(
-                        margins[occupied:]
-                    )
-                    next_remainder = (remainder + occupied) % self.capacity
-                    candidate = confidence + branch_confidence, path + (occupied,)
-                    previous = next_states.get(next_remainder)
-                    if previous is None or candidate[0] > previous[0]:
-                        next_states[next_remainder] = candidate
-            states = next_states
-        return states[0][1] if score_rows else ()
+    def _threshold_occupancy_selection(
+        self,
+        evidence_rows: tuple[tuple[_PresenceEvidence, ...], ...],
+    ) -> _OccupancySelection:
+        occupancies = tuple(
+            self._threshold_occupancy(tuple(item.score for item in row))
+            for row in evidence_rows
+        )
+        slot_clusters = tuple(
+            tuple(1 if item.score >= self.presence_threshold else 0 for item in row)
+            for row in evidence_rows
+        )
+        return _OccupancySelection(
+            occupancies,
+            slot_clusters,
+            "threshold-fallback",
+            0,
+            (),
+            (),
+            (),
+        )
+
+    def _select_occupancies(
+        self,
+        evidence_rows: tuple[tuple[_PresenceEvidence, ...], ...],
+    ) -> _OccupancySelection:
+        """Cluster all slots into occupied/empty groups, then choose prefixes."""
+
+        if not evidence_rows:
+            return _OccupancySelection((), (), "no-slots", None, (), (), ())
+
+        flat_evidence = tuple(item for row in evidence_rows for item in row)
+        matrix = np.asarray(
+            [self._presence_vector(item) for item in flat_evidence],
+            dtype=float,
+        )
+        if len(matrix) < 2 or len(np.unique(matrix, axis=0)) < 2:
+            return self._threshold_occupancy_selection(evidence_rows)
+
+        model = KMeans(n_clusters=2, n_init=20, random_state=0)
+        labels = model.fit_predict(matrix)
+        centers = tuple(
+            tuple(float(value) for value in center)
+            for center in model.cluster_centers_
+        )
+        sizes = tuple(int((labels == cluster).sum()) for cluster in range(2))
+        mean_scores = tuple(
+            float(
+                np.mean(
+                    [
+                        evidence.score
+                        for evidence, label in zip(flat_evidence, labels)
+                        if label == cluster
+                    ]
+                )
+            )
+            for cluster in range(2)
+        )
+        empty_cluster = int(np.argmin(mean_scores))
+        occupied_cluster = 1 - empty_cluster
+        separation = mean_scores[occupied_cluster] - mean_scores[empty_cluster]
+        distinct_empty_cluster = (
+            mean_scores[empty_cluster] < self.presence_threshold
+            and mean_scores[occupied_cluster] >= self.presence_threshold + 0.15
+            and separation >= 0.20
+        )
+        if not distinct_empty_cluster:
+            return self._threshold_occupancy_selection(evidence_rows)
+
+        label_rows: list[tuple[int, ...]] = []
+        occupancies: list[int] = []
+        cursor = 0
+        for row in evidence_rows:
+            row_length = len(row)
+            row_matrix = matrix[cursor : cursor + row_length]
+            row_labels = tuple(
+                int(label) for label in labels[cursor : cursor + row_length]
+            )
+            label_rows.append(row_labels)
+            cursor += row_length
+
+            costs = []
+            for occupied in range(row_length + 1):
+                expected_clusters = (
+                    (occupied_cluster,) * occupied
+                    + (empty_cluster,) * (row_length - occupied)
+                )
+                cost = sum(
+                    float(np.sum((vector - model.cluster_centers_[cluster]) ** 2))
+                    for vector, cluster in zip(row_matrix, expected_clusters)
+                )
+                costs.append(cost)
+            occupancies.append(min(range(row_length + 1), key=costs.__getitem__))
+
+        return _OccupancySelection(
+            tuple(occupancies),
+            tuple(label_rows),
+            "two-cluster-presence",
+            empty_cluster,
+            centers,
+            mean_scores,
+            sizes,
+        )
 
     @staticmethod
     def _bird_crop_box(
@@ -465,19 +733,20 @@ class BoardRecognizer:
         height: int,
         *,
         has_outer_neighbor: bool,
+        scale: float = 1.0,
     ) -> tuple[int, int, int, int]:
         # The detected slot point sits slightly toward the screen edge relative
         # to the most useful body region. Shift every crop toward the center of
         # the screen. Packed birds still need a smaller counter-shift toward the
         # fixed/base end so the outer neighbor does not dominate the crop.
         direction = 1 if side == "left" else -1
-        inward_shift = 0.006 * width
+        inward_shift = 0.006 * width * scale
         overlap_compensation = (
-            0.002 * width if has_outer_neighbor else 0.0
+            0.002 * width * scale if has_outer_neighbor else 0.0
         )
         center_x = round(x + direction * (inward_shift - overlap_compensation))
-        half_width = round(0.040 * width)
-        half_height = round(0.021 * height)
+        half_width = round(0.040 * width * scale)
+        half_height = round(0.021 * height * scale)
         # The fixed/base slot is close to the screen edge. Clamp the center so
         # the full crop remains inside the screenshot: left crops move right
         # and right crops move left by the minimum additional amount required.
@@ -500,6 +769,7 @@ class BoardRecognizer:
         background_color: np.ndarray,
         *,
         has_outer_neighbor: bool,
+        scale: float = 1.0,
     ) -> Image.Image:
         crop_box = BoardRecognizer._bird_crop_box(
             x,
@@ -508,6 +778,7 @@ class BoardRecognizer:
             width,
             height,
             has_outer_neighbor=has_outer_neighbor,
+            scale=scale,
         )
         left, top, right, bottom = crop_box
         crop_width = right - left
@@ -808,16 +1079,13 @@ class BoardRecognizer:
         annotated = image.copy()
         draw = ImageDraw.Draw(annotated)
         width, _height = image.size
+        rgb = np.asarray(image)
         line_width = max(3, round(width * 0.003))
         radius = max(9, round(width * 0.009))
 
         for side, branch_rows in rows.items():
-            start_x, end_x = (
-                (0, round(0.38 * width))
-                if side == "left"
-                else (round(0.65 * width), width - 1)
-            )
             for branch_y in branch_rows:
+                start_x, end_x = self._branch_x_bounds(rgb, side, branch_y)
                 draw.line(
                     (start_x, branch_y, end_x, branch_y),
                     fill=(0, 190, 255),
@@ -850,6 +1118,7 @@ class BoardRecognizer:
                         image.width,
                         image.height,
                         has_outer_neighbor=slot_index < occupied - 1,
+                        scale=float(record["layout_scale"]),
                     )
                     draw.rectangle(crop_box, outline=(255, 190, 35), width=line_width)
 
@@ -873,6 +1142,7 @@ class BoardRecognizer:
         rows: dict[Side, list[int]],
         records: list[dict[str, object]],
         bird_crops: list[Image.Image],
+        occupancy_selection: _OccupancySelection,
         candidates: tuple[_ClusterCandidate, ...],
         selected: _ClusterCandidate | None,
         debug_path: Path,
@@ -896,6 +1166,7 @@ class BoardRecognizer:
         for index, record in enumerate(records):
             slots = record["slots"]
             evidence = record["presence_evidence"]
+            presence_clusters = record["presence_clusters"]
             occupied = int(record["occupied"])  # type: ignore[arg-type]
             branches_payload.append(
                 {
@@ -903,12 +1174,17 @@ class BoardRecognizer:
                     "side": record["side"],
                     "branch_y": record["branch_y"],
                     "bird_y": record["bird_y"],
+                    "branch_bounds": record["branch_bounds"],
+                    "branch_length": round(float(record["branch_length"]), 3),
                     "raw_occupied": record["raw_occupied"],
                     "occupied": occupied,
                     "slots": [
                         {
                             "index": slot_index,
                             "point": point,
+                            "presence_cluster": int(
+                                presence_clusters[slot_index]  # type: ignore[index]
+                            ),
                             "presence_score": round(
                                 float(evidence[slot_index].score), 6  # type: ignore[index]
                             ),
@@ -935,6 +1211,14 @@ class BoardRecognizer:
                                 ),
                                 6,
                             ),
+                            "largest_component_fill": round(
+                                float(
+                                    evidence[  # type: ignore[index]
+                                        slot_index
+                                    ].largest_component_fill
+                                ),
+                                6,
+                            ),
                             "crop_box": (
                                 self._bird_crop_box(
                                     point[0],
@@ -943,6 +1227,7 @@ class BoardRecognizer:
                                     image.width,
                                     image.height,
                                     has_outer_neighbor=slot_index < occupied - 1,
+                                    scale=float(record["layout_scale"]),
                                 )
                                 if slot_index < occupied
                                 else None
@@ -958,8 +1243,23 @@ class BoardRecognizer:
             "clustering_algorithm": "capacity-constrained-kmeans",
             "image_size": image.size,
             "capacity": self.capacity,
+            "layout_scale": (
+                float(records[0]["layout_scale"]) if records else 1.0
+            ),
+            "average_branch_length": (
+                round(float(records[0]["branch_length"]), 3)
+                if records
+                else None
+            ),
             "presence_threshold": self.presence_threshold,
-            "occupancy_constraint": "prefix-per-branch,total-multiple-of-capacity",
+            "occupancy_constraint": "two-cluster-presence,prefix-per-branch",
+            "presence_clustering": {
+                "method": occupancy_selection.method,
+                "empty_cluster": occupancy_selection.empty_cluster,
+                "centers": occupancy_selection.centers,
+                "mean_scores": occupancy_selection.mean_scores,
+                "sizes": occupancy_selection.sizes,
+            },
             "branch_rows": rows,
             "detected_branches": len(records),
             "detected_birds": len(bird_crops),

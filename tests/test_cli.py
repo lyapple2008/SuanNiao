@@ -10,6 +10,8 @@ from PIL import Image
 from suanniao.cli import (
     _capture_game_board,
     _create_run_directory,
+    _destination_click_point,
+    _physical_state_key,
     analyze,
     build_parser,
     play,
@@ -38,6 +40,7 @@ class FakeController:
         self.dismiss_calls = 0
         self.taps: list[tuple[int, int]] = []
         self.closed = False
+        self.clear_selection_calls: list[tuple[int, int]] = []
 
     @staticmethod
     def _next(items: list[Image.Image]) -> Image.Image:
@@ -61,6 +64,17 @@ class FakeController:
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
 
+    def tap_pair(
+        self,
+        source: tuple[int, int],
+        destination: tuple[int, int],
+        _gap: float,
+    ) -> None:
+        self.taps.extend((source, destination))
+
+    def clear_selection(self, image_size: tuple[int, int]) -> None:
+        self.clear_selection_calls.append(image_size)
+
     def close(self) -> None:
         self.closed = True
 
@@ -81,8 +95,11 @@ class FakeRecognizer:
             return self.board_results.pop(0)
         return self.board_results[0]
 
-    def read(self, _screenshot: Image.Image, *, debug_dir: Path) -> RecognitionResult:
-        self.debug_directories.append(debug_dir)
+    def read(
+        self, _screenshot: Image.Image, *, debug_dir: Path | None = None
+    ) -> RecognitionResult:
+        if debug_dir is not None:
+            self.debug_directories.append(debug_dir)
         if len(self.results) > 1:
             return self.results.pop(0)
         return self.results[0]
@@ -137,6 +154,27 @@ def solve_result(*moves: Move, solved: bool = False) -> SolveResult:
 
 
 class PlayTests(unittest.TestCase):
+    def test_destination_click_uses_slot_farthest_from_source(self) -> None:
+        branch = DetectedBranch(
+            "right",
+            1448,
+            1397,
+            ((1160, 1397), (1071, 1397), (982, 1397), (893, 1397)),
+            (),
+        )
+
+        destination = _destination_click_point(branch, (982, 1525))
+
+        self.assertEqual(destination, (1160, 1446))
+
+    def test_physical_state_key_keeps_positions_but_ignores_label_ids(self) -> None:
+        first = BoardState(((7, 3), (), (3, 7)))
+        relabelled = BoardState(((4, 9), (), (9, 4)))
+        moved = BoardState(((7,), (3,), (3, 7)))
+
+        self.assertEqual(_physical_state_key(first), _physical_state_key(relabelled))
+        self.assertNotEqual(_physical_state_key(first), _physical_state_key(moved))
+
     def test_analyze_saves_debug_report_to_default_sibling_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "screenshot.png"
@@ -201,7 +239,7 @@ class PlayTests(unittest.TestCase):
             self.assertTrue(controller.closed)
             self.assertEqual(
                 controller.stable_capture_options,
-                [{"interval": 0.12, "attempts": 5}],
+                [{"interval": 0.10, "attempts": 5}],
             )
 
     @patch("suanniao.cli.time.sleep", return_value=None)
@@ -357,22 +395,70 @@ class PlayTests(unittest.TestCase):
                 patch("suanniao.cli._solver", return_value=solver),
             ):
                 exit_code = play(args)
-
         self.assertEqual(exit_code, 2)
         self.assertEqual(len(controller.taps), 2)
         self.assertEqual(controller.dismiss_calls, 1)
         self.assertIn("批量操作中检测到非棋盘画面", output.getvalue())
         self.assertIn("已自动点击", output.getvalue())
 
+    @patch("suanniao.cli.time.sleep", return_value=None)
+    def test_failed_move_stops_batch_and_clears_stale_selection(
+        self, _sleep: object
+    ) -> None:
+        board = solid_image("white")
+        unchanged = sample_recognition(((0,), (), (1,), ()))
+        first_solution = solve_result(
+            Move(0, 1, 1),
+            Move(2, 3, 1),
+        )
+        controller = FakeController(
+            stable_screenshots=(board, board),
+            quick_screenshots=(board,),
+        )
+        recognizer = FakeRecognizer((unchanged, unchanged, unchanged))
+        solver = FakeSolver((first_solution, solve_result()))
+        args = build_parser().parse_args(
+            [
+                "play",
+                "--moves-per-plan",
+                "2",
+                "--tap-gap",
+                "0",
+                "--move-wait",
+                "0",
+                "--elimination-wait",
+                "0",
+            ]
+        )
+
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(output):
+            with (
+                patch(
+                    "suanniao.cli._create_run_directory",
+                    return_value=Path(directory),
+                ),
+                patch("suanniao.cli._controller", return_value=controller),
+                patch("suanniao.cli._recognizer", return_value=recognizer),
+                patch("suanniao.cli._solver", return_value=solver),
+            ):
+                exit_code = play(args)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(len(controller.taps), 2)
+        self.assertGreaterEqual(len(controller.clear_selection_calls), 2)
+        self.assertIn("实际棋盘与预期不一致", output.getvalue())
+
     def test_play_defaults_favor_fast_rolling_batches(self) -> None:
         args = build_parser().parse_args(["play", "--platform", "ios"])
 
         self.assertEqual(args.moves_per_plan, 8)
-        self.assertEqual(args.beam_width, 500)
-        self.assertEqual(args.time_limit, 8.0)
-        self.assertEqual(args.tap_gap, 0.08)
-        self.assertEqual(args.move_wait, 0.40)
-        self.assertEqual(args.elimination_wait, 0.65)
+        self.assertEqual(args.beam_width, 120)
+        self.assertEqual(args.time_limit, 2.0)
+        self.assertEqual(args.tap_gap, 0.12)
+        self.assertEqual(args.move_wait, 0.30)
+        self.assertEqual(args.elimination_wait, 0.55)
+        self.assertEqual(args.capture_interval, 0.10)
 
 
 if __name__ == "__main__":

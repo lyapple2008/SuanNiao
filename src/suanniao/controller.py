@@ -43,6 +43,15 @@ class DeviceController(Protocol):
 
     def tap(self, x: int, y: int) -> None: ...
 
+    def tap_pair(
+        self,
+        source: tuple[int, int],
+        destination: tuple[int, int],
+        gap: float,
+    ) -> None: ...
+
+    def clear_selection(self, image_size: tuple[int, int]) -> None: ...
+
     def dismiss_interruption(self) -> bool: ...
 
     def close(self) -> None: ...
@@ -125,6 +134,20 @@ class AdbController(StableCaptureMixin):
         )
         if completed.returncode != 0:
             raise AdbError(f"ADB tap failed: {completed.stderr.strip()}")
+
+    def tap_pair(
+        self,
+        source: tuple[int, int],
+        destination: tuple[int, int],
+        gap: float,
+    ) -> None:
+        self.tap(*source)
+        time.sleep(gap)
+        self.tap(*destination)
+
+    def clear_selection(self, image_size: tuple[int, int]) -> None:
+        width, height = image_size
+        self.tap(width // 2, round(height * 0.66))
 
     def dismiss_interruption(self) -> bool:
         return False
@@ -327,14 +350,38 @@ class WdaController(StableCaptureMixin):
             self._request_json("POST", "/wda/tap/0", tap_payload)
 
     def tap(self, x: int, y: int) -> None:
+        tap_x, tap_y = self._screenshot_to_viewport(x, y)
+        self._tap_viewport(tap_x, tap_y)
+
+    def _screenshot_to_viewport(self, x: int, y: int) -> tuple[float, float]:
         screen_width, screen_height = self._window_size()
         if self._last_screenshot_size is None:
-            tap_x, tap_y = x, y
-        else:
-            image_width, image_height = self._last_screenshot_size
-            tap_x = round(x * screen_width / image_width)
-            tap_y = round(y * screen_height / image_height)
-        self._tap_viewport(tap_x, tap_y)
+            return x, y
+        image_width, image_height = self._last_screenshot_size
+        return (
+            round(x * screen_width / image_width),
+            round(y * screen_height / image_height),
+        )
+
+    def tap_pair(
+        self,
+        source: tuple[int, int],
+        destination: tuple[int, int],
+        gap: float,
+    ) -> None:
+        """Tap source and destination through WDA's reliable tap endpoint."""
+
+        source_x, source_y = self._screenshot_to_viewport(*source)
+        destination_x, destination_y = self._screenshot_to_viewport(*destination)
+        self._tap_viewport(source_x, source_y)
+        time.sleep(gap)
+        self._tap_viewport(destination_x, destination_y)
+
+    def clear_selection(self, image_size: tuple[int, int]) -> None:
+        """Tap the empty center lane to cancel a lingering bird selection."""
+
+        width, height = image_size
+        self.tap(width // 2, round(height * 0.66))
 
     def dismiss_interruption(self) -> bool:
         """Tap a clearly labelled close/skip control in the active iOS UI."""

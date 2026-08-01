@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from suanniao.vision import BoardRecognizer
+from suanniao.vision import BoardRecognizer, _PresenceEvidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +68,11 @@ class VisionTests(unittest.TestCase):
             )
             self.assertEqual(
                 report["occupancy_constraint"],
-                "prefix-per-branch,total-multiple-of-capacity",
+                "two-cluster-presence,prefix-per-branch",
+            )
+            self.assertEqual(
+                report["presence_clustering"]["method"],
+                "two-cluster-presence",
             )
             self.assertEqual(report["candidates"][0]["type_count"], 9)
             self.assertTrue(
@@ -80,17 +84,46 @@ class VisionTests(unittest.TestCase):
             self.assertTrue(report["candidates"][0]["valid"])
             self.assertTrue(all(size % 4 == 0 for size in result.cluster_sizes))
 
-    def test_global_occupancy_constraint_removes_marginal_extra_bird(self) -> None:
+    def test_presence_clustering_rejects_vines_on_empty_branches(self) -> None:
         recognizer = BoardRecognizer(presence_threshold=0.20)
-
-        occupancies = recognizer._select_occupancies(
+        bird = _PresenceEvidence(0.68, 0.71, 0.64, 0.62, 0.86, 0.74)
+        empty_rows = (
             (
-                (0.8, 0.8, 0.8, 0.8),
-                (0.201, 0.1, 0.1, 0.1),
-            )
+                _PresenceEvidence(0.244, 0.31, 0.244, 0.242, 0.772, 0.31),
+                _PresenceEvidence(0.142, 0.18, 0.115, 0.115, 0.570, 0.20),
+                _PresenceEvidence(0.015, 0.02, 0.012, 0.012, 0.025, 0.65),
+                _PresenceEvidence(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ),
+            (
+                _PresenceEvidence(0.183, 0.22, 0.181, 0.180, 0.519, 0.37),
+                _PresenceEvidence(0.019, 0.03, 0.017, 0.013, 0.051, 0.60),
+                _PresenceEvidence(0.017, 0.02, 0.008, 0.008, 0.063, 0.65),
+                _PresenceEvidence(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ),
         )
 
-        self.assertEqual(occupancies, (4, 0))
+        selection = recognizer._select_occupancies(
+            ((bird,) * 4, (bird,) * 4, *empty_rows)
+        )
+
+        self.assertEqual(selection.method, "two-cluster-presence")
+        self.assertEqual(selection.occupancies, (4, 4, 0, 0))
+
+    def test_presence_clustering_rejects_sparse_single_slot_vine(self) -> None:
+        recognizer = BoardRecognizer(presence_threshold=0.20)
+        bird = _PresenceEvidence(0.62, 0.70, 0.60, 0.57, 0.84, 0.72)
+        vine_branch = (
+            _PresenceEvidence(0.247, 0.357, 0.248, 0.246, 0.797, 0.308),
+            _PresenceEvidence(0.143, 0.207, 0.117, 0.116, 0.595, 0.196),
+            _PresenceEvidence(0.029, 0.027, 0.027, 0.027, 0.051, 0.648),
+            _PresenceEvidence(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+
+        selection = recognizer._select_occupancies(
+            ((bird,) * 4, (bird,) * 4, vine_branch)
+        )
+
+        self.assertEqual(selection.occupancies, (4, 4, 0))
 
     def test_presence_evidence_rejects_thin_wood_strip(self) -> None:
         rgb = np.full((1478, 680, 3), (155, 215, 240), dtype=np.uint8)
@@ -140,6 +173,97 @@ class VisionTests(unittest.TestCase):
 
         self.assertGreater(left_box[0] + left_box[2], 2 * 100)
         self.assertLess(right_box[0] + right_box[2], 2 * 900)
+
+    def test_layout_scale_tracks_same_side_branch_spacing(self) -> None:
+        recognizer = BoardRecognizer()
+
+        normal = recognizer._layout_scale(
+            {"left": [835, 958, 1081], "right": [897, 1020, 1143]},
+            2622,
+        )
+        enlarged = recognizer._layout_scale(
+            {"left": [845, 998, 1151], "right": [921, 1075, 1229]},
+            2622,
+        )
+
+        self.assertAlmostEqual(normal, 1.0, places=2)
+        self.assertAlmostEqual(enlarged, 1.25, places=2)
+
+    def test_branch_bounds_follow_edge_component_within_half_screen(self) -> None:
+        rgb = np.full((300, 1200, 3), (155, 215, 240), dtype=np.uint8)
+        branch_y = 150
+        wood = (125, 65, 30)
+        rgb[branch_y - 4 : branch_y + 5, 0:491] = wood
+        rgb[branch_y - 4 : branch_y + 5, 520:571] = wood
+        rgb[branch_y - 4 : branch_y + 5, 710:1200] = wood
+        rgb[branch_y - 4 : branch_y + 5, 630:681] = wood
+
+        left = BoardRecognizer._branch_x_bounds(rgb, "left", branch_y)
+        right = BoardRecognizer._branch_x_bounds(rgb, "right", branch_y)
+
+        self.assertEqual(left, (0, 490))
+        self.assertEqual(right, (710, 1199))
+        self.assertLess(left[1] - left[0], rgb.shape[1] / 2)
+        self.assertLess(right[1] - right[0], rgb.shape[1] / 2)
+
+    def test_branch_slots_use_average_length_and_segment_centers(self) -> None:
+        recognizer = BoardRecognizer()
+        average_length = recognizer._average_branch_length(
+            ((0, 300), (700, 1000), (5, 325)),
+            1000,
+        )
+
+        left_slots = recognizer._slot_centers(
+            "left",
+            800,
+            1000,
+            branch_bounds=(0, 300),
+            branch_length=average_length,
+        )
+        right_slots = recognizer._slot_centers(
+            "right",
+            800,
+            1000,
+            branch_bounds=(700, 1000),
+            branch_length=average_length,
+        )
+
+        self.assertAlmostEqual(average_length, (300 + 300 + 320) / 3)
+        self.assertEqual(
+            [point[0] for point in left_slots],
+            [38, 115, 192, 268],
+        )
+        self.assertEqual(
+            [point[0] for point in right_slots],
+            [962, 885, 808, 732],
+        )
+
+    def test_layout_scale_expands_crop_size(self) -> None:
+        recognizer = BoardRecognizer()
+        normal_box = recognizer._bird_crop_box(
+            200,
+            800,
+            "left",
+            1206,
+            2622,
+            has_outer_neighbor=True,
+        )
+        enlarged_box = recognizer._bird_crop_box(
+            200,
+            800,
+            "left",
+            1206,
+            2622,
+            has_outer_neighbor=True,
+            scale=1.25,
+        )
+
+        self.assertGreater(
+            enlarged_box[2] - enlarged_box[0], normal_box[2] - normal_box[0]
+        )
+        self.assertGreater(
+            enlarged_box[3] - enlarged_box[1], normal_box[3] - normal_box[1]
+        )
 
     def test_screen_edge_crop_boxes_are_moved_fully_inside_image(self) -> None:
         left_box = BoardRecognizer._bird_crop_box(
