@@ -15,6 +15,149 @@ def png_base64(width: int, height: int) -> str:
 
 
 class WdaControllerTests(unittest.TestCase):
+    def test_session_sets_bounded_quiescence_timeouts_once(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/session-1/appium/settings":
+                return {"value": payload}
+            if path == "/session/session-1/screenshot":
+                return {"value": screenshot}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(
+                session_id="session-1",
+                default_active_application="com.tencent.xin",
+                quiescence_timeout=0.2,
+            )
+            controller.capture()
+            controller.capture()
+
+        self.assertEqual(
+            requests[0],
+            (
+                "POST",
+                "/session/session-1/appium/settings",
+                {
+                    "settings": {
+                        "defaultActiveApplication": "com.tencent.xin",
+                        "waitForIdleTimeout": 0.2,
+                        "animationCoolOffTimeout": 0.2,
+                    }
+                },
+            ),
+        )
+        self.assertEqual(
+            sum(path.endswith("/appium/settings") for _, path, _ in requests),
+            1,
+        )
+
+    def test_new_session_sets_default_active_application_once(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if method == "POST" and path == "/session":
+                return {"value": {"sessionId": "session-1"}}
+            if path == "/session/session-1/appium/settings":
+                return {"value": payload}
+            if path == "/session/session-1/screenshot":
+                return {"value": screenshot}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(
+                default_active_application="com.tencent.xin"
+            )
+            controller.capture()
+            controller.capture()
+
+        self.assertEqual(
+            requests[:3],
+            [
+                (
+                    "POST",
+                    "/session",
+                    {
+                        "capabilities": {
+                            "alwaysMatch": {"platformName": "iOS"},
+                            "firstMatch": [{}],
+                        }
+                    },
+                ),
+                (
+                    "POST",
+                    "/session/session-1/appium/settings",
+                    {
+                        "settings": {
+                            "defaultActiveApplication": "com.tencent.xin"
+                        }
+                    },
+                ),
+                ("GET", "/session/session-1/screenshot", None),
+            ],
+        )
+        self.assertEqual(
+            sum(path.endswith("/appium/settings") for _, path, _ in requests),
+            1,
+        )
+
+    def test_existing_session_sets_default_active_application_once(self) -> None:
+        screenshot = png_base64(300, 600)
+        requests: list[tuple[str, str, object]] = []
+
+        def fake_request(
+            _controller: WdaController,
+            method: str,
+            path: str,
+            payload: object = None,
+        ) -> dict[str, object]:
+            requests.append((method, path, payload))
+            if path == "/session/existing-session/appium/settings":
+                return {"value": payload}
+            if path == "/session/existing-session/screenshot":
+                return {"value": screenshot}
+            raise AssertionError(f"Unexpected WDA request: {method} {path}")
+
+        with patch.object(WdaController, "_request_json", new=fake_request):
+            controller = WdaController(
+                session_id="existing-session",
+                default_active_application="com.tencent.xin",
+            )
+            controller.capture()
+            controller.capture()
+
+        self.assertEqual(
+            requests[0],
+            (
+                "POST",
+                "/session/existing-session/appium/settings",
+                {
+                    "settings": {
+                        "defaultActiveApplication": "com.tencent.xin"
+                    }
+                },
+            ),
+        )
+        self.assertEqual(
+            sum(path.endswith("/appium/settings") for _, path, _ in requests),
+            1,
+        )
+
     def test_screenshot_and_retina_tap_scaling(self) -> None:
         screenshot = png_base64(300, 600)
         requests: list[tuple[str, str, object]] = []
@@ -198,6 +341,10 @@ class WdaControllerTests(unittest.TestCase):
     def test_invalid_wda_url_is_rejected(self) -> None:
         with self.assertRaises(WdaError):
             WdaController(base_url="127.0.0.1:8100")
+
+    def test_negative_quiescence_timeout_is_rejected(self) -> None:
+        with self.assertRaises(WdaError):
+            WdaController(quiescence_timeout=-0.01)
 
     def test_dismiss_interruption_uses_labelled_json_button_center(self) -> None:
         requests: list[tuple[str, str, object]] = []

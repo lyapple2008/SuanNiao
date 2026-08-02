@@ -163,7 +163,10 @@ class WdaController(StableCaptureMixin):
     base_url: str = "http://127.0.0.1:8100"
     timeout: float = 10.0
     session_id: str | None = None
+    default_active_application: str | None = None
+    quiescence_timeout: float | None = None
     _owns_session: bool = field(init=False, default=False)
+    _session_configured: bool = field(init=False, default=False)
     _last_screenshot_size: tuple[int, int] | None = field(init=False, default=None)
     _last_window_rect: tuple[float, float] | None = field(init=False, default=None)
     _screenshot_endpoint: str | None = field(init=False, default=None)
@@ -178,6 +181,8 @@ class WdaController(StableCaptureMixin):
         self.base_url = self.base_url.rstrip("/")
         if self.timeout <= 0:
             raise WdaError("--wda-timeout must be positive")
+        if self.quiescence_timeout is not None and self.quiescence_timeout < 0:
+            raise WdaError("--wda-quiescence-timeout must not be negative")
 
     def _request_json(
         self,
@@ -224,6 +229,7 @@ class WdaController(StableCaptureMixin):
 
     def _ensure_session(self) -> str:
         if self.session_id:
+            self._configure_session(self.session_id)
             return self.session_id
 
         bodies = (
@@ -249,11 +255,29 @@ class WdaController(StableCaptureMixin):
             if isinstance(session_id, str) and session_id:
                 self.session_id = session_id
                 self._owns_session = True
+                self._configure_session(session_id)
                 return session_id
 
         if last_error is not None:
             raise last_error
         raise WdaError("WebDriverAgent did not return a session id")
+
+    def _configure_session(self, session_id: str) -> None:
+        if self._session_configured:
+            return
+        settings: dict[str, object] = {}
+        if self.default_active_application is not None:
+            settings["defaultActiveApplication"] = self.default_active_application
+        if self.quiescence_timeout is not None:
+            settings["waitForIdleTimeout"] = self.quiescence_timeout
+            settings["animationCoolOffTimeout"] = self.quiescence_timeout
+        if settings:
+            self._request_json(
+                "POST",
+                f"/session/{session_id}/appium/settings",
+                {"settings": settings},
+            )
+        self._session_configured = True
 
     def capture(self) -> Image.Image:
         session_id = self._ensure_session()
@@ -442,6 +466,7 @@ class WdaController(StableCaptureMixin):
         session_id = self.session_id
         self.session_id = None
         self._owns_session = False
+        self._session_configured = False
         self._screenshot_endpoint = None
         self._tap_strategy = None
         self._last_screenshot_size = None

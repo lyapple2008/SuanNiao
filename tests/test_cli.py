@@ -9,6 +9,7 @@ from PIL import Image
 
 from suanniao.cli import (
     _capture_game_board,
+    _controller,
     _create_run_directory,
     _destination_click_point,
     _is_plausible_board_transition,
@@ -170,6 +171,17 @@ def solve_result(*moves: Move, solved: bool = False) -> SolveResult:
 
 
 class PlayTests(unittest.TestCase):
+    def test_ios_controller_uses_fast_bounded_quiescence_wait(self) -> None:
+        args = build_parser().parse_args(["play", "--platform", "ios"])
+
+        controller = _controller(args)
+
+        self.assertEqual(
+            controller.default_active_application,
+            "com.tencent.xin",
+        )
+        self.assertEqual(controller.quiescence_timeout, 0.2)
+
     def test_board_transition_allows_only_one_completed_branch(self) -> None:
         self.assertTrue(_is_plausible_board_transition((15, 52), (15, 52)))
         self.assertTrue(_is_plausible_board_transition((15, 52), (14, 48)))

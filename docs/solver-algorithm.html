@@ -1,0 +1,1749 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="用动画和图示解释 suanniao 的 BeamSolver 求解算法。">
+  <title>算鸟求解算法图解</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-soft: #eef2f8;
+      --surface-strong: #e5ebf5;
+      --text: #182033;
+      --muted: #667085;
+      --border: #d7dfeb;
+      --primary: #3659d9;
+      --primary-soft: #e9edff;
+      --primary-text: #ffffff;
+      --success: #16805a;
+      --success-soft: #e3f6ee;
+      --danger: #b54747;
+      --danger-soft: #fbe9e9;
+      --warning: #a45c13;
+      --warning-soft: #fff1dc;
+      --bird-a: #7c62d9;
+      --bird-b: #e18435;
+      --bird-c: #2d9a8d;
+      --wood: #93613b;
+      --shadow: 0 12px 32px rgba(38, 53, 84, 0.09);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10131a;
+        --surface: #191e29;
+        --surface-soft: #222938;
+        --surface-strong: #2b3445;
+        --text: #eef2f8;
+        --muted: #a6afc0;
+        --border: #343e50;
+        --primary: #91a8ff;
+        --primary-soft: #293457;
+        --primary-text: #121725;
+        --success: #67d1a7;
+        --success-soft: #173d32;
+        --danger: #f09a9a;
+        --danger-soft: #482626;
+        --warning: #f2b36f;
+        --warning-soft: #49341f;
+        --bird-a: #a58cff;
+        --bird-b: #f1a45f;
+        --bird-c: #67ccbe;
+        --wood: #c18a5c;
+        --shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% -10%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 34rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    a:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--primary) 42%, transparent);
+      outline-offset: 3px;
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .page {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 28px;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--primary);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 760px;
+      margin-bottom: 9px;
+      font-size: clamp(1.8rem, 4.5vw, 3.25rem);
+      line-height: 1.13;
+      letter-spacing: -0.03em;
+    }
+
+    h2 {
+      margin-bottom: 6px;
+      font-size: clamp(1.25rem, 2.5vw, 1.7rem);
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin-bottom: 5px;
+      font-size: 1rem;
+    }
+
+    .hero-copy {
+      max-width: 720px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .source-links {
+      display: grid;
+      justify-items: end;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    .section {
+      margin-top: 28px;
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 13px;
+    }
+
+    .section-heading p {
+      max-width: 560px;
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .flow-step {
+      position: relative;
+      min-width: 0;
+      padding: 11px 10px;
+      border-radius: 11px;
+      background: var(--surface-soft);
+      transition: background 220ms ease, color 220ms ease, transform 220ms ease;
+    }
+
+    .flow-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 50%;
+      right: -9px;
+      z-index: 2;
+      width: 10px;
+      color: var(--muted);
+      transform: translateY(-50%);
+      text-align: center;
+    }
+
+    .flow-step.active {
+      background: var(--primary);
+      color: var(--primary-text);
+      transform: translateY(-2px);
+    }
+
+    .flow-number {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .flow-step.active .flow-number {
+      color: color-mix(in srgb, var(--primary-text) 72%, transparent);
+    }
+
+    .flow-label {
+      display: block;
+      font-size: 0.9rem;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .flow-note {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      line-height: 1.25;
+    }
+
+    .flow-step.active .flow-note {
+      color: color-mix(in srgb, var(--primary-text) 78%, transparent);
+    }
+
+    .lab {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .lab-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      min-height: 39px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 7px 13px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+    }
+
+    .button:hover:not(:disabled) {
+      border-color: var(--primary);
+      transform: translateY(-1px);
+    }
+
+    .button.primary {
+      border-color: var(--primary);
+      background: var(--primary);
+      color: var(--primary-text);
+    }
+
+    .button:disabled {
+      cursor: not-allowed;
+      opacity: 0.46;
+    }
+
+    .beam-control {
+      display: grid;
+      grid-template-columns: auto 96px;
+      align-items: center;
+      gap: 9px;
+      min-height: 39px;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .beam-control output {
+      color: var(--text);
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .phase-summary {
+      min-width: 0;
+      text-align: right;
+    }
+
+    .phase-name {
+      display: block;
+      color: var(--primary);
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .phase-message {
+      display: block;
+      max-width: 580px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 0.86rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-soft);
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 10px 15px;
+      border-right: 1px solid var(--border);
+    }
+
+    .metric:last-child {
+      border-right: 0;
+    }
+
+    .metric-label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .metric-value {
+      display: block;
+      overflow: hidden;
+      font-size: 1.08rem;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .lab-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1.65fr) minmax(270px, 0.8fr);
+      min-height: 470px;
+    }
+
+    .search-space {
+      min-width: 0;
+      padding: 16px;
+      border-right: 1px solid var(--border);
+    }
+
+    .lane + .lane {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .lane-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 9px;
+    }
+
+    .lane-title {
+      font-size: 0.9rem;
+      font-weight: 800;
+    }
+
+    .lane-caption {
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 9px;
+    }
+
+    .state-card {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 9px;
+      background: var(--surface);
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      box-shadow: 0 5px 14px color-mix(in srgb, var(--text) 5%, transparent);
+      transition: opacity 260ms ease, transform 260ms ease, border-color 180ms ease,
+        box-shadow 180ms ease;
+      animation: card-enter 300ms ease both;
+      animation-delay: var(--delay, 0ms);
+    }
+
+    .state-card:hover,
+    .state-card[aria-pressed="true"] {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+    }
+
+    .state-card.kept {
+      border-color: var(--success);
+    }
+
+    .state-card.pruned {
+      opacity: 0.34;
+      transform: scale(0.975);
+      box-shadow: none;
+    }
+
+    .state-card.solution {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+    }
+
+    .state-head,
+    .state-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 7px;
+    }
+
+    .state-head {
+      margin-bottom: 7px;
+      font-size: 0.76rem;
+    }
+
+    .state-id {
+      font-weight: 800;
+    }
+
+    .state-tag {
+      border-radius: 999px;
+      padding: 1px 6px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .state-tag.keep {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .state-tag.drop {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .mini-board {
+      display: grid;
+      gap: 4px;
+      min-height: 84px;
+    }
+
+    .branch {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, 18px);
+      align-items: center;
+      min-height: 18px;
+      padding-left: 2px;
+    }
+
+    .branch::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 2px;
+      bottom: 1px;
+      z-index: 0;
+      height: 3px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--wood) 72%, transparent);
+    }
+
+    .branch.removed::after {
+      background: repeating-linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--success) 65%, transparent) 0 5px,
+        transparent 5px 9px
+      );
+    }
+
+    .bird {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 16px;
+      border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+      border-radius: 50% 50% 45% 45%;
+      color: var(--text);
+      font-size: 0.58rem;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .bird::after {
+      content: "";
+      position: absolute;
+      right: -3px;
+      top: 6px;
+      border-width: 2px 0 2px 3px;
+      border-style: solid;
+      border-color: transparent transparent transparent color-mix(in srgb, var(--warning) 80%, var(--text));
+    }
+
+    .bird.a { background: color-mix(in srgb, var(--bird-a) 62%, var(--surface)); }
+    .bird.b { background: color-mix(in srgb, var(--bird-b) 64%, var(--surface)); }
+    .bird.c { background: color-mix(in srgb, var(--bird-c) 62%, var(--surface)); }
+
+    .state-foot {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty-lane {
+      display: grid;
+      min-height: 132px;
+      place-items: center;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      color: var(--muted);
+      font-size: 0.88rem;
+      text-align: center;
+    }
+
+    .inspector {
+      min-width: 0;
+      padding: 16px;
+      background: color-mix(in srgb, var(--surface-soft) 55%, var(--surface));
+    }
+
+    .inspector-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .inspector-title h3 {
+      margin-bottom: 0;
+    }
+
+    .selected-move {
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .rank-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .rank-item {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 9px;
+      border-radius: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .rank-order {
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+    }
+
+    .rank-name {
+      min-width: 0;
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    .rank-hint {
+      display: block;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 400;
+    }
+
+    .rank-value {
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rank-tuple {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: var(--primary-soft);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.84rem;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .lex-note {
+      margin: 8px 2px 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+      text-align: center;
+    }
+
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .legend-dot.a { background: var(--bird-a); }
+    .legend-dot.b { background: var(--bird-b); }
+    .legend-dot.c { background: var(--bird-c); }
+
+    .rules {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .rule-card,
+    .prune-card {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      background: var(--surface);
+    }
+
+    .rule-number {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 10px;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-size: 0.78rem;
+      font-weight: 900;
+    }
+
+    .rule-card p,
+    .prune-card p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .rule-visual {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 48px;
+      margin: 10px 0 8px;
+      padding: 8px;
+      border-radius: 10px;
+      background: var(--surface-soft);
+      overflow: hidden;
+    }
+
+    .run {
+      display: inline-flex;
+      gap: 2px;
+      padding-bottom: 3px;
+      border-bottom: 3px solid var(--wood);
+    }
+
+    .arrow {
+      color: var(--primary);
+      font-weight: 900;
+    }
+
+    .formula {
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .removed-mark {
+      color: var(--success);
+      font-size: 1.6rem;
+      font-weight: 900;
+    }
+
+    .prunes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .prune-icon {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 42px;
+      margin-bottom: 9px;
+      color: var(--primary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      font-weight: 800;
+    }
+
+    .strike {
+      color: var(--muted);
+      text-decoration: line-through;
+      text-decoration-color: var(--danger);
+      text-decoration-thickness: 2px;
+    }
+
+    .endings {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: stretch;
+      gap: 12px;
+    }
+
+    .ending {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      background: var(--surface);
+    }
+
+    .ending-icon {
+      display: grid;
+      flex: 0 0 auto;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--success-soft);
+      color: var(--success);
+      font-weight: 900;
+    }
+
+    .ending.fallback .ending-icon {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .ending p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .or {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 800;
+    }
+
+    .footer {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    @keyframes card-enter {
+      from {
+        opacity: 0;
+        transform: translateY(7px);
+      }
+    }
+
+    @media (max-width: 900px) {
+      .flow {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .flow-step:nth-child(3)::after {
+        content: "↓";
+        top: auto;
+        right: 50%;
+        bottom: -12px;
+        transform: translateX(50%);
+      }
+
+      .lab-body {
+        grid-template-columns: 1fr;
+      }
+
+      .search-space {
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .rank-list {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+
+      .rank-item {
+        grid-template-columns: 1fr;
+        gap: 4px;
+        text-align: center;
+      }
+
+      .rank-order {
+        margin: 0 auto;
+      }
+
+      .rules {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      .page {
+        padding: 22px 14px 40px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .source-links {
+        justify-items: start;
+      }
+
+      .section-heading,
+      .lab-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .phase-summary {
+        text-align: left;
+      }
+
+      .phase-message {
+        white-space: normal;
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .metric:nth-child(2) {
+        border-right: 0;
+      }
+
+      .metric:nth-child(-n + 2) {
+        border-bottom: 1px solid var(--border);
+      }
+
+      .rank-list {
+        grid-template-columns: 1fr;
+      }
+
+      .rank-item {
+        grid-template-columns: 28px minmax(0, 1fr) auto;
+        text-align: left;
+      }
+
+      .rank-order {
+        margin: 0;
+      }
+
+      .prunes {
+        grid-template-columns: 1fr;
+      }
+
+      .endings {
+        grid-template-columns: 1fr;
+      }
+
+      .or {
+        min-height: 16px;
+      }
+    }
+
+    @media (max-width: 440px) {
+      .flow {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow-step:nth-child(2)::after,
+      .flow-step:nth-child(4)::after {
+        content: "↓";
+        top: auto;
+        right: 50%;
+        bottom: -12px;
+        transform: translateX(50%);
+      }
+
+      .flow-step:nth-child(3)::after {
+        content: "→";
+        top: 50%;
+        right: -9px;
+        bottom: auto;
+        transform: translateY(-50%);
+      }
+
+      .controls .button {
+        flex: 1 1 104px;
+      }
+
+      .beam-control {
+        grid-template-columns: auto minmax(90px, 1fr);
+        flex: 1 1 100%;
+      }
+
+      .state-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .rules {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page" id="solverExplainer">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">suanniao · BeamSolver</p>
+        <h1>不是猜下一步，而是同时保留一小批“最有希望的未来”</h1>
+        <p class="hero-copy">每走一层：生成合法局面、去掉重复、按五项指标排序，再只留下前 B 个继续搜索。</p>
+      </div>
+      <nav class="source-links" aria-label="源码链接">
+        <a href="../src/suanniao/solver.py">solver.py：搜索与评分</a>
+        <a href="../src/suanniao/model.py">model.py：规则与状态</a>
+      </nav>
+    </header>
+
+    <section aria-label="算法总览">
+      <div class="flow" id="algorithmFlow">
+        <div class="flow-step active" data-flow="start">
+          <span class="flow-number">01</span>
+          <span class="flow-label">放入初始状态</span>
+          <span class="flow-note">beam = [initial]</span>
+        </div>
+        <div class="flow-step" data-flow="expand">
+          <span class="flow-number">02</span>
+          <span class="flow-label">展开合法移动</span>
+          <span class="flow-note">legal_moves()</span>
+        </div>
+        <div class="flow-step" data-flow="dedupe">
+          <span class="flow-number">03</span>
+          <span class="flow-label">对称状态去重</span>
+          <span class="flow-note">canonical_key()</span>
+        </div>
+        <div class="flow-step" data-flow="score">
+          <span class="flow-number">04</span>
+          <span class="flow-label">五维评分排序</span>
+          <span class="flow-note">_rank()</span>
+        </div>
+        <div class="flow-step" data-flow="prune">
+          <span class="flow-number">05</span>
+          <span class="flow-label">只留前 B 个</span>
+          <span class="flow-note">beam_width</span>
+        </div>
+        <div class="flow-step" data-flow="finish">
+          <span class="flow-number">06</span>
+          <span class="flow-label">命中或继续</span>
+          <span class="flow-note">return / next depth</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="animationTitle">
+      <div class="section-heading">
+        <div>
+          <h2 id="animationTitle">把搜索过程跑一遍</h2>
+          <p>示例仍使用真实规则：每根树枝容量为 4；虚线表示凑齐 4 只后已经消失。</p>
+        </div>
+      </div>
+
+      <div class="lab">
+        <div class="lab-toolbar">
+          <div class="controls" aria-label="动画控制">
+            <button class="button primary" id="playButton" type="button">播放</button>
+            <button class="button" id="stepButton" type="button">下一步</button>
+            <button class="button" id="resetButton" type="button">重置</button>
+            <label class="beam-control" for="beamWidth">
+              <span>束宽 B = <output id="beamOutput">3</output></span>
+              <input id="beamWidth" type="range" min="1" max="4" value="3" step="1">
+            </label>
+          </div>
+          <div class="phase-summary" aria-live="polite">
+            <span class="phase-name" id="phaseName">初始化</span>
+            <span class="phase-message" id="phaseMessage">初始棋盘进入搜索束。</span>
+          </div>
+        </div>
+
+        <div class="metrics" aria-label="搜索指标">
+          <div class="metric">
+            <span class="metric-label">深度</span>
+            <span class="metric-value" id="depthValue">0</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">当前束</span>
+            <span class="metric-value" id="beamCount">1</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">本层候选</span>
+            <span class="metric-value" id="candidateCount">0</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">已访问状态</span>
+            <span class="metric-value" id="visitedCount">1</span>
+          </div>
+        </div>
+
+        <div class="lab-body">
+          <div class="search-space">
+            <section class="lane" aria-labelledby="beamLaneTitle">
+              <div class="lane-head">
+                <span class="lane-title" id="beamLaneTitle">当前束：允许继续展开</span>
+                <span class="lane-caption" id="beamCaption">1 个状态</span>
+              </div>
+              <div class="state-grid" id="beamStates"></div>
+            </section>
+
+            <section class="lane" aria-labelledby="candidateLaneTitle">
+              <div class="lane-head">
+                <span class="lane-title" id="candidateLaneTitle">下一层候选</span>
+                <span class="lane-caption" id="candidateCaption">等待展开</span>
+              </div>
+              <div id="candidateStates" class="empty-lane">点击“下一步”，从当前束生成所有合法新状态</div>
+            </section>
+
+            <div class="legend" aria-label="示例图例">
+              <span class="legend-item"><span class="legend-dot a"></span>A 类鸟</span>
+              <span class="legend-item"><span class="legend-dot b"></span>B 类鸟</span>
+              <span class="legend-item"><span class="legend-dot c"></span>C 类鸟</span>
+              <span class="legend-item">点击任一状态查看评分</span>
+            </div>
+          </div>
+
+          <aside class="inspector" aria-labelledby="inspectorTitle">
+            <div class="inspector-title">
+              <h3 id="inspectorTitle">评分：从上到下比较</h3>
+              <span class="selected-move" id="selectedMove">初始状态</span>
+            </div>
+            <div class="rank-list" id="rankList"></div>
+            <div class="rank-tuple" id="rankTuple">(0, -6, 0, -3, 1)</div>
+            <p class="lex-note">Python 元组按字典序比较：前一项不同，后面的项就不再决定胜负。</p>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="moveRulesTitle">
+      <div class="section-heading">
+        <div>
+          <h2 id="moveRulesTitle">一个候选状态是怎样生成的？</h2>
+          <p><code>BoardState.legal_moves()</code> 先筛合法移动，<code>apply()</code> 再得到新棋盘。</p>
+        </div>
+      </div>
+      <div class="rules">
+        <article class="rule-card">
+          <span class="rule-number">1</span>
+          <h3>只拿外端连续同类鸟</h3>
+          <div class="rule-visual" aria-label="外端两个 B 可一起移动">
+            <span class="run"><span class="bird a">A</span><span class="bird c">C</span><span class="bird b">B</span><span class="bird b">B</span></span>
+            <span class="arrow">⇢</span>
+            <span class="run"><span class="bird b">B</span><span class="bird b">B</span></span>
+          </div>
+          <p>从元组末尾数，连续段长度记为 <strong>run</strong>。</p>
+        </article>
+
+        <article class="rule-card">
+          <span class="rule-number">2</span>
+          <h3>目标必须空着或同色</h3>
+          <div class="rule-visual" aria-label="B 可以移到空树枝或外端为 B 的树枝">
+            <span class="run"><span class="bird b">B</span></span>
+            <span class="arrow">→</span>
+            <span class="run"><span class="bird a">A</span><span class="bird b">B</span></span>
+            <span class="arrow">✓</span>
+          </div>
+          <p>目标已满、已消除或外端颜色不同，都跳过。</p>
+        </article>
+
+        <article class="rule-card">
+          <span class="rule-number">3</span>
+          <h3>一次尽量多搬</h3>
+          <div class="rule-visual">
+            <span class="formula">count = min(run, 剩余空位)</span>
+          </div>
+          <p>这与游戏里点一次后自动搬运的行为一致。</p>
+        </article>
+
+        <article class="rule-card">
+          <span class="rule-number">4</span>
+          <h3>四只同类，整枝消失</h3>
+          <div class="rule-visual" aria-label="四只 A 鸟组成完整树枝后消失">
+            <span class="run"><span class="bird a">A</span><span class="bird a">A</span><span class="bird a">A</span><span class="bird a">A</span></span>
+            <span class="arrow">→</span>
+            <span class="removed-mark">✓</span>
+          </div>
+          <p>用 <code>REMOVED = (-1,)</code> 标记，之后不能再接鸟。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="pruningTitle">
+      <div class="section-heading">
+        <div>
+          <h2 id="pruningTitle">三种“其实没必要搜”的情况</h2>
+          <p>剪掉对称或原地踏步的分支，把束宽留给真正不同的未来。</p>
+        </div>
+      </div>
+      <div class="prunes">
+        <article class="prune-card">
+          <div class="prune-icon"><span>[A][B][ ]</span><span>≡</span><span>[ ][B][A]</span></div>
+          <h3>树枝位置对称</h3>
+          <p>对所有树枝排序后做键；只是交换位置的棋盘只搜一次。</p>
+        </article>
+        <article class="prune-card">
+          <div class="prune-icon"><span>[ ][ ]</span><span>→</span><span>[A]</span><span class="strike">第二个空枝</span></div>
+          <h3>多个空枝等价</h3>
+          <p>同一组鸟移到哪根空枝都一样，只考虑第一根空枝。</p>
+        </article>
+        <article class="prune-card">
+          <div class="prune-icon"><span>[AAAA]</span><span>→</span><span>[ ]</span><span class="strike">搬家</span></div>
+          <h3>同色整枝搬空枝</h3>
+          <p>这只是在交换“同色枝”和“空枝”的位置，不产生进展。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="endingTitle">
+      <div class="section-heading">
+        <div>
+          <h2 id="endingTitle">搜索什么时候停？</h2>
+        </div>
+      </div>
+      <div class="endings">
+        <article class="ending">
+          <span class="ending-icon">✓</span>
+          <div>
+            <h3>发现目标，立即返回</h3>
+            <p>某个新状态的消除数达到 target，直接交回完整移动路径。</p>
+          </div>
+        </article>
+        <div class="or">或者</div>
+        <article class="ending fallback">
+          <span class="ending-icon">↺</span>
+          <div>
+            <h3>限制到达，返回目前最好</h3>
+            <p>时间、深度或候选耗尽时，返回搜索中评分最高的路径。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer">默认配置：beam_width = 2000 · max_depth = 80 · time_limit = 20 秒</footer>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.getElementById("solverExplainer");
+      const CAPACITY = 4;
+      const INITIAL = [[0, 1, 2, 2], [1, 2, 0, 0], [2, 0, 1, 1], []];
+      const LABELS = ["A", "B", "C"];
+      const CLASS_NAMES = ["a", "b", "c"];
+      const PHASE_NAMES = {
+        start: "初始化",
+        expand: "展开合法移动并去重",
+        score: "按五维评分排序",
+        prune: "束宽剪枝",
+        finish: "找到完整解",
+        exhausted: "没有新候选"
+      };
+
+      const playButton = root.querySelector("#playButton");
+      const stepButton = root.querySelector("#stepButton");
+      const resetButton = root.querySelector("#resetButton");
+      const beamWidthInput = root.querySelector("#beamWidth");
+      const beamOutput = root.querySelector("#beamOutput");
+      const phaseName = root.querySelector("#phaseName");
+      const phaseMessage = root.querySelector("#phaseMessage");
+      const depthValue = root.querySelector("#depthValue");
+      const beamCount = root.querySelector("#beamCount");
+      const candidateCount = root.querySelector("#candidateCount");
+      const visitedCount = root.querySelector("#visitedCount");
+      const beamStates = root.querySelector("#beamStates");
+      const candidateStates = root.querySelector("#candidateStates");
+      const beamCaption = root.querySelector("#beamCaption");
+      const candidateCaption = root.querySelector("#candidateCaption");
+      const selectedMove = root.querySelector("#selectedMove");
+      const rankList = root.querySelector("#rankList");
+      const rankTuple = root.querySelector("#rankTuple");
+      const flowSteps = [...root.querySelectorAll(".flow-step")];
+
+      let timeline = [];
+      let frameIndex = 0;
+      let selectedNodeId = null;
+      let timer = null;
+      let nextNodeId = 1;
+
+      function cloneState(state) {
+        return state.map(branch => branch === null ? null : [...branch]);
+      }
+
+      function canonicalKey(state) {
+        return state
+          .map(branch => {
+            if (branch === null) return "R";
+            if (branch.length === 0) return "E";
+            return `B${branch.join(",")}`;
+          })
+          .sort()
+          .join("|");
+      }
+
+      function topRun(branch) {
+        const bird = branch[branch.length - 1];
+        let count = 1;
+        while (count < branch.length && branch[branch.length - 1 - count] === bird) {
+          count += 1;
+        }
+        return { bird, count };
+      }
+
+      function legalMoves(state) {
+        const moves = [];
+        const firstEmpty = state.findIndex(branch => Array.isArray(branch) && branch.length === 0);
+
+        state.forEach((sourceBranch, source) => {
+          if (!Array.isArray(sourceBranch) || sourceBranch.length === 0) return;
+          const run = topRun(sourceBranch);
+          const sourceIsUniform = run.count === sourceBranch.length;
+
+          state.forEach((destinationBranch, destination) => {
+            if (source === destination || !Array.isArray(destinationBranch)) return;
+            if (destinationBranch.length >= CAPACITY) return;
+
+            if (destinationBranch.length > 0) {
+              if (destinationBranch[destinationBranch.length - 1] !== run.bird) return;
+            } else if (sourceIsUniform || destination !== firstEmpty) {
+              return;
+            }
+
+            const count = Math.min(run.count, CAPACITY - destinationBranch.length);
+            const next = cloneState(state);
+            next[source] = next[source].slice(0, -count);
+            const merged = [...next[destination], ...Array(count).fill(run.bird)];
+            const completes = merged.length === CAPACITY && merged.every(value => value === run.bird);
+            next[destination] = completes ? null : merged;
+            moves.push({ source, destination, count, completes, state: next });
+          });
+        });
+
+        return moves;
+      }
+
+      function metricsFor(state) {
+        let removed = 0;
+        let runs = 0;
+        let uniform = 0;
+        let locked = 0;
+        let empty = 0;
+
+        state.forEach(branch => {
+          if (branch === null) {
+            removed += 1;
+            return;
+          }
+          if (branch.length === 0) {
+            empty += 1;
+            return;
+          }
+
+          let branchRuns = 1;
+          for (let index = 1; index < branch.length; index += 1) {
+            if (branch[index] !== branch[index - 1]) branchRuns += 1;
+          }
+          runs += branchRuns;
+
+          if (branchRuns === 1) uniform += branch.length ** 2;
+          if (branch.length === CAPACITY && branchRuns > 1) locked += 1;
+        });
+
+        return {
+          removed,
+          runs,
+          uniform,
+          locked,
+          empty,
+          rank: [removed, -runs, uniform, -locked, empty]
+        };
+      }
+
+      function compareRank(left, right) {
+        for (let index = 0; index < left.length; index += 1) {
+          if (left[index] !== right[index]) return left[index] - right[index];
+        }
+        return 0;
+      }
+
+      function compareNodes(left, right) {
+        const comparison = compareRank(right.metrics.rank, left.metrics.rank);
+        return comparison || left.id - right.id;
+      }
+
+      function makeNode(state, depth, parent, move) {
+        return {
+          id: nextNodeId++,
+          state,
+          depth,
+          parentId: parent ? parent.id : null,
+          move,
+          path: parent ? [...parent.path, move] : [],
+          metrics: metricsFor(state)
+        };
+      }
+
+      function buildTimeline(width) {
+        nextNodeId = 1;
+        const initial = makeNode(cloneState(INITIAL), 0, null, null);
+        const target = INITIAL.flat().length / CAPACITY;
+        const seen = new Set([canonicalKey(initial.state)]);
+        let beam = [initial];
+        let best = initial;
+
+        const frames = [{
+          phase: "start",
+          depth: 0,
+          beam: [...beam],
+          candidates: [],
+          visited: seen.size,
+          bestId: best.id,
+          message: "初始棋盘进入搜索束。"
+        }];
+
+        outer:
+        for (let depth = 1; depth <= 20; depth += 1) {
+          const candidates = [];
+
+          for (const parent of beam) {
+            for (const move of legalMoves(parent.state)) {
+              const key = canonicalKey(move.state);
+              if (seen.has(key)) continue;
+              seen.add(key);
+
+              const child = makeNode(move.state, depth, parent, move);
+              candidates.push(child);
+              if (compareRank(child.metrics.rank, best.metrics.rank) > 0) best = child;
+
+              if (child.metrics.removed >= target) {
+                frames.push({
+                  phase: "expand",
+                  depth,
+                  beam: [...beam],
+                  candidates: [...candidates],
+                  visited: seen.size,
+                  bestId: best.id,
+                  solutionId: child.id,
+                  message: `生成 S${child.id} 时已消除 ${target} 根树枝，达到目标。`
+                });
+                frames.push({
+                  phase: "finish",
+                  depth,
+                  beam: [...beam],
+                  candidates: [...candidates],
+                  visited: seen.size,
+                  bestId: best.id,
+                  solutionId: child.id,
+                  message: `立即返回：共 ${child.path.length} 步，探索 ${seen.size} 个状态。`
+                });
+                break outer;
+              }
+            }
+          }
+
+          frames.push({
+            phase: "expand",
+            depth,
+            beam: [...beam],
+            candidates: [...candidates],
+            visited: seen.size,
+            bestId: best.id,
+            message: `生成 ${candidates.length} 个未访问候选；重复状态已跳过。`
+          });
+
+          if (candidates.length === 0) {
+            frames.push({
+              phase: "exhausted",
+              depth,
+              beam: [...beam],
+              candidates: [],
+              visited: seen.size,
+              bestId: best.id,
+              message: `没有新候选，返回目前最佳状态 S${best.id}。`
+            });
+            break;
+          }
+
+          const sorted = [...candidates].sort(compareNodes);
+          frames.push({
+            phase: "score",
+            depth,
+            beam: [...beam],
+            candidates: sorted,
+            visited: seen.size,
+            bestId: best.id,
+            message: "按评分元组从大到小排列；消除数拥有最高优先级。"
+          });
+
+          const survivors = sorted.slice(0, width);
+          frames.push({
+            phase: "prune",
+            depth,
+            beam: [...beam],
+            candidates: sorted,
+            survivorIds: new Set(survivors.map(node => node.id)),
+            visited: seen.size,
+            bestId: best.id,
+            message: `只保留前 ${survivors.length} 个状态，作为深度 ${depth} 的新搜索束。`
+          });
+
+          beam = survivors;
+          frames.push({
+            phase: "start",
+            depth,
+            beam: [...beam],
+            candidates: [],
+            visited: seen.size,
+            bestId: best.id,
+            message: `深度 ${depth}：幸存状态准备继续展开。`
+          });
+        }
+
+        return frames;
+      }
+
+      function renderBranch(branch) {
+        if (branch === null) {
+          return '<div class="branch removed" aria-label="已消除树枝"></div>';
+        }
+        const birds = branch.map(type =>
+          `<span class="bird ${CLASS_NAMES[type]}" aria-label="${LABELS[type]} 类鸟">${LABELS[type]}</span>`
+        ).join("");
+        const label = branch.length ? branch.map(type => LABELS[type]).join("、") : "空";
+        return `<div class="branch" aria-label="树枝：${label}">${birds}</div>`;
+      }
+
+      function moveLabel(node) {
+        if (!node.move) return "初始状态";
+        const completion = node.move.completes ? " · 完成消除" : "";
+        return `${node.move.source + 1} → ${node.move.destination + 1}，搬 ${node.move.count} 只${completion}`;
+      }
+
+      function stateCard(node, frame, index, candidate) {
+        const isPruning = frame.phase === "prune";
+        const kept = isPruning && frame.survivorIds.has(node.id);
+        const pruned = isPruning && !kept;
+        const solution = frame.solutionId === node.id;
+        const selected = node.id === selectedNodeId;
+        const classes = ["state-card"];
+        if (kept) classes.push("kept");
+        if (pruned) classes.push("pruned");
+        if (solution) classes.push("solution");
+
+        let tag = candidate ? `#${index + 1}` : `深度 ${node.depth}`;
+        let tagClass = "state-tag";
+        if (kept) {
+          tag = "保留";
+          tagClass += " keep";
+        } else if (pruned) {
+          tag = "剪枝";
+          tagClass += " drop";
+        } else if (solution) {
+          tag = "达到目标";
+          tagClass += " keep";
+        }
+
+        return `
+          <button class="${classes.join(" ")}" type="button" data-node-id="${node.id}"
+            aria-pressed="${selected}" style="--delay:${Math.min(index * 34, 240)}ms">
+            <span class="state-head">
+              <span class="state-id">S${node.id}</span>
+              <span class="${tagClass}">${tag}</span>
+            </span>
+            <span class="mini-board">${node.state.map(renderBranch).join("")}</span>
+            <span class="state-foot">
+              <span>${node.move ? `${node.move.source + 1}→${node.move.destination + 1}` : "起点"}</span>
+              <span>消 ${node.metrics.removed} · 段 ${node.metrics.runs}</span>
+            </span>
+          </button>`;
+      }
+
+      function availableNodes(frame) {
+        const map = new Map();
+        [...frame.beam, ...frame.candidates].forEach(node => map.set(node.id, node));
+        return [...map.values()];
+      }
+
+      function preferredNode(frame) {
+        const nodes = availableNodes(frame);
+        const selected = nodes.find(node => node.id === selectedNodeId);
+        if (selected) return selected;
+        if (frame.solutionId) return nodes.find(node => node.id === frame.solutionId) || nodes[0];
+        return frame.candidates[0] || frame.beam[0];
+      }
+
+      function renderInspector(node) {
+        if (!node) return;
+        selectedNodeId = node.id;
+        selectedMove.textContent = `S${node.id} · ${moveLabel(node)}`;
+
+        const items = [
+          { name: "已消除树枝", hint: "越多越好；最高优先级", value: node.metrics.removed },
+          { name: "− 连续段总数", hint: "同类越聚集，数值越大", value: -node.metrics.runs },
+          { name: "同色长度平方和", hint: "偏好集中成较长同色枝", value: node.metrics.uniform },
+          { name: "− 塞满混色枝", hint: "惩罚不能接鸟的混色枝", value: -node.metrics.locked },
+          { name: "空树枝数", hint: "前面相同后才比较", value: node.metrics.empty }
+        ];
+
+        rankList.innerHTML = items.map((item, index) => `
+          <div class="rank-item">
+            <span class="rank-order">${index + 1}</span>
+            <span class="rank-name">${item.name}<span class="rank-hint">${item.hint}</span></span>
+            <span class="rank-value">${item.value}</span>
+          </div>`).join("");
+        rankTuple.textContent = `(${node.metrics.rank.join(", ")})`;
+      }
+
+      function activeFlowFor(frame) {
+        if (frame.phase === "start") return "start";
+        if (frame.phase === "expand") return frame.solutionId ? "finish" : "dedupe";
+        if (frame.phase === "score") return "score";
+        if (frame.phase === "prune") return "prune";
+        return "finish";
+      }
+
+      function render() {
+        const frame = timeline[frameIndex];
+        const chosen = preferredNode(frame);
+        selectedNodeId = chosen ? chosen.id : null;
+
+        phaseName.textContent = PHASE_NAMES[frame.phase];
+        phaseMessage.textContent = frame.message;
+        depthValue.textContent = frame.depth;
+        beamCount.textContent = frame.beam.length;
+        candidateCount.textContent = frame.candidates.length;
+        visitedCount.textContent = frame.visited;
+        beamCaption.textContent = `${frame.beam.length} 个状态`;
+
+        flowSteps.forEach(step => {
+          step.classList.toggle("active", step.dataset.flow === activeFlowFor(frame));
+        });
+
+        beamStates.innerHTML = frame.beam
+          .map((node, index) => stateCard(node, frame, index, false))
+          .join("");
+
+        if (frame.candidates.length === 0) {
+          candidateStates.className = "empty-lane";
+          candidateStates.textContent = frame.phase === "start"
+            ? "下一步：枚举当前束里的所有合法移动"
+            : "没有未访问的新状态";
+          candidateCaption.textContent = "等待展开";
+        } else {
+          candidateStates.className = "state-grid";
+          candidateStates.innerHTML = frame.candidates
+            .map((node, index) => stateCard(node, frame, index, true))
+            .join("");
+
+          if (frame.phase === "prune") {
+            candidateCaption.textContent = `绿色保留，淡化剪枝`;
+          } else if (frame.solutionId) {
+            candidateCaption.textContent = "命中目标，搜索停止";
+          } else if (frame.phase === "score") {
+            candidateCaption.textContent = "已按评分从高到低排列";
+          } else {
+            candidateCaption.textContent = "重复状态未进入列表";
+          }
+        }
+
+        renderInspector(chosen);
+
+        const atEnd = frameIndex === timeline.length - 1;
+        stepButton.disabled = atEnd;
+        if (atEnd) {
+          stopPlayback();
+          playButton.textContent = "重新播放";
+        } else if (!timer) {
+          playButton.textContent = frameIndex === 0 ? "播放" : "继续";
+        }
+      }
+
+      function stopPlayback() {
+        if (timer !== null) window.clearInterval(timer);
+        timer = null;
+      }
+
+      function advance() {
+        if (frameIndex < timeline.length - 1) {
+          frameIndex += 1;
+          render();
+        }
+      }
+
+      function startPlayback() {
+        if (frameIndex === timeline.length - 1) frameIndex = 0;
+        if (timer !== null) return;
+        playButton.textContent = "暂停";
+        timer = window.setInterval(() => {
+          if (frameIndex >= timeline.length - 1) {
+            stopPlayback();
+            render();
+            return;
+          }
+          advance();
+        }, 1150);
+      }
+
+      function rebuild() {
+        stopPlayback();
+        const width = Number(beamWidthInput.value);
+        beamOutput.value = width;
+        beamOutput.textContent = width;
+        timeline = buildTimeline(width);
+        frameIndex = 0;
+        selectedNodeId = null;
+        render();
+      }
+
+      root.addEventListener("click", event => {
+        const card = event.target.closest("[data-node-id]");
+        if (!card || !root.contains(card)) return;
+        const frame = timeline[frameIndex];
+        const node = availableNodes(frame).find(item => item.id === Number(card.dataset.nodeId));
+        if (!node) return;
+        selectedNodeId = node.id;
+        render();
+      });
+
+      playButton.addEventListener("click", () => {
+        if (timer !== null) {
+          stopPlayback();
+          render();
+        } else {
+          startPlayback();
+        }
+      });
+
+      stepButton.addEventListener("click", () => {
+        stopPlayback();
+        advance();
+      });
+
+      resetButton.addEventListener("click", rebuild);
+      beamWidthInput.addEventListener("input", rebuild);
+
+      rebuild();
+    })();
+  </script>
+</body>
+</html>

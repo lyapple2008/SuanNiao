@@ -86,6 +86,8 @@ def _controller(args: argparse.Namespace) -> DeviceController:
             base_url=args.wda_url,
             timeout=args.wda_timeout,
             session_id=args.wda_session_id,
+            default_active_application=args.wda_default_active_application,
+            quiescence_timeout=args.wda_quiescence_timeout,
         )
     return AdbController(args.adb, args.serial)
 
@@ -655,6 +657,23 @@ def build_parser() -> argparse.ArgumentParser:
     play_parser.add_argument(
         "--wda-session-id",
         help="reuse an existing WebDriverAgent session instead of creating one",
+    )
+    play_parser.add_argument(
+        "--wda-default-active-application",
+        default="com.tencent.xin",
+        help=(
+            "prefer this foreground bundle id for WDA coordinate actions; "
+            "default: com.tencent.xin"
+        ),
+    )
+    play_parser.add_argument(
+        "--wda-quiescence-timeout",
+        type=float,
+        default=0.2,
+        help=(
+            "maximum WDA idle/animation wait after coordinate actions; "
+            "default: 0.2"
+        ),
     )
     play_parser.add_argument(
         "--wait-for-start",

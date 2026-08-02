@@ -155,6 +155,8 @@ iPhone 截图通常使用 Retina 像素，而 WDA 点击使用逻辑点。程序
 - `--serial DEVICE_ID`：有多个 Android ADB 设备时指定设备；
 - `--wda-url URL`：指定 iPhone 的 WebDriverAgent 地址；
 - `--wda-session-id ID`：复用已经创建的 WDA 会话；
+- `--wda-default-active-application BUNDLE_ID`：固定 WDA 坐标操作的首选前台 App，默认微信 `com.tencent.xin`，避免每次点击重复扫描当前 App；
+- `--wda-quiescence-timeout 0.2`：限制 WDA 等待 App 动画空闲的时间；小游戏存在持续动画，因此默认只等待 0.2 秒；
 - `--wait-for-start` / `--no-wait-for-start`：设备预热后是否等待人工确认开始；
 - `--debug-reports live|deferred|off`：实时、延后或不生成逐回合聚类报告；
 - `--moves-per-plan 8`：没有发生树枝消除时，一次识别和搜索后最多连续执行多少步；
