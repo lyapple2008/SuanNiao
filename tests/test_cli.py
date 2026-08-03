@@ -171,7 +171,7 @@ def solve_result(*moves: Move, solved: bool = False) -> SolveResult:
 
 
 class PlayTests(unittest.TestCase):
-    def test_ios_controller_uses_fast_bounded_quiescence_wait(self) -> None:
+    def test_ios_controller_disables_quiescence_wait(self) -> None:
         args = build_parser().parse_args(["play", "--platform", "ios"])
 
         controller = _controller(args)
@@ -180,7 +180,7 @@ class PlayTests(unittest.TestCase):
             controller.default_active_application,
             "com.tencent.xin",
         )
-        self.assertEqual(controller.quiescence_timeout, 0.2)
+        self.assertEqual(controller.quiescence_timeout, 0.0)
 
     def test_board_transition_allows_only_one_completed_branch(self) -> None:
         self.assertTrue(_is_plausible_board_transition((15, 52), (15, 52)))
@@ -542,11 +542,12 @@ class PlayTests(unittest.TestCase):
         board = solid_image("white")
         ad = solid_image("black")
         recognition = sample_recognition(
-            ((0,), (0, 0), (1,), (1, 1, 1), (0,))
+            ((0, 1), (1,), (0, 2), (2,), (0, 3), (3,))
         )
         first_solution = solve_result(
             Move(0, 1, 1),
-            Move(4, 1, 1, True),
+            Move(2, 3, 1),
+            Move(4, 5, 1),
         )
         controller = FakeController(
             stable_screenshots=(board, ad, board),
@@ -562,7 +563,7 @@ class PlayTests(unittest.TestCase):
             [
                 "play",
                 "--moves-per-plan",
-                "2",
+                "3",
                 "--tap-gap",
                 "0",
                 "--move-wait",
@@ -585,7 +586,8 @@ class PlayTests(unittest.TestCase):
             ):
                 exit_code = play(args)
         self.assertEqual(exit_code, 2)
-        self.assertEqual(len(controller.taps), 2)
+        self.assertEqual(len(controller.taps), 4)
+        self.assertEqual(controller.capture_calls, 1)
         self.assertEqual(controller.dismiss_calls, 0)
         self.assertIn("批量操作中检测到非棋盘画面", output.getvalue())
         self.assertIn("程序不会自动操作", output.getvalue())
@@ -595,10 +597,13 @@ class PlayTests(unittest.TestCase):
         self, _sleep: object
     ) -> None:
         board = solid_image("white")
-        unchanged = sample_recognition(((0,), (), (1,), ()))
+        unchanged = sample_recognition(
+            ((0, 1), (1,), (0, 2), (2,), (0, 3), (3,))
+        )
         first_solution = solve_result(
             Move(0, 1, 1),
             Move(2, 3, 1),
+            Move(4, 5, 1),
         )
         controller = FakeController(
             stable_screenshots=(board, board),
@@ -610,7 +615,7 @@ class PlayTests(unittest.TestCase):
             [
                 "play",
                 "--moves-per-plan",
-                "2",
+                "3",
                 "--tap-gap",
                 "0",
                 "--move-wait",
@@ -634,7 +639,8 @@ class PlayTests(unittest.TestCase):
                 exit_code = play(args)
 
         self.assertEqual(exit_code, 2)
-        self.assertEqual(len(controller.taps), 2)
+        self.assertEqual(len(controller.taps), 4)
+        self.assertEqual(controller.capture_calls, 1)
         self.assertEqual(len(controller.clear_selection_calls), 2)
         self.assertIn("实际棋盘与预期不一致", output.getvalue())
 
@@ -644,8 +650,8 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(args.moves_per_plan, 8)
         self.assertEqual(args.beam_width, 120)
         self.assertEqual(args.time_limit, 2.0)
-        self.assertEqual(args.tap_gap, 0.12)
-        self.assertEqual(args.move_wait, 0.30)
+        self.assertEqual(args.tap_gap, 0.20)
+        self.assertEqual(args.move_wait, 0.20)
         self.assertEqual(args.elimination_wait, 0.55)
         self.assertEqual(args.capture_interval, 0.10)
         self.assertEqual(args.no_move_confirmations, 2)

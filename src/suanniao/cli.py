@@ -503,7 +503,10 @@ def play(args: argparse.Namespace) -> int:
             virtual_state = recognition.state
             interrupted = False
             for batch_index, move in enumerate(batch):
-                if batch_index:
+                # The stable capture after a batch also validates its final
+                # state, so only pay for an extra screenshot after each pair
+                # of moves inside longer batches.
+                if batch_index and batch_index % 2 == 0:
                     quick_screen = controller.capture()
                     if not recognizer.has_game_board(quick_screen):
                         _save_play_screenshot(
@@ -669,10 +672,10 @@ def build_parser() -> argparse.ArgumentParser:
     play_parser.add_argument(
         "--wda-quiescence-timeout",
         type=float,
-        default=0.2,
+        default=0.0,
         help=(
             "maximum WDA idle/animation wait after coordinate actions; "
-            "default: 0.2"
+            "default: 0 (disabled)"
         ),
     )
     play_parser.add_argument(
@@ -693,8 +696,8 @@ def build_parser() -> argparse.ArgumentParser:
             "default: live"
         ),
     )
-    play_parser.add_argument("--tap-gap", type=float, default=0.12)
-    play_parser.add_argument("--move-wait", type=float, default=0.30)
+    play_parser.add_argument("--tap-gap", type=float, default=0.20)
+    play_parser.add_argument("--move-wait", type=float, default=0.20)
     play_parser.add_argument(
         "--elimination-wait",
         type=float,

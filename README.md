@@ -156,12 +156,12 @@ iPhone 截图通常使用 Retina 像素，而 WDA 点击使用逻辑点。程序
 - `--wda-url URL`：指定 iPhone 的 WebDriverAgent 地址；
 - `--wda-session-id ID`：复用已经创建的 WDA 会话；
 - `--wda-default-active-application BUNDLE_ID`：固定 WDA 坐标操作的首选前台 App，默认微信 `com.tencent.xin`，避免每次点击重复扫描当前 App；
-- `--wda-quiescence-timeout 0.2`：限制 WDA 等待 App 动画空闲的时间；小游戏存在持续动画，因此默认只等待 0.2 秒；
+- `--wda-quiescence-timeout 0`：关闭 WDA 在每次坐标点击后等待 App 动画空闲；程序仍保留点击间隔、移动后等待和稳定截图校验；
 - `--wait-for-start` / `--no-wait-for-start`：设备预热后是否等待人工确认开始；
 - `--debug-reports live|deferred|off`：实时、延后或不生成逐回合聚类报告；
 - `--moves-per-plan 8`：没有发生树枝消除时，一次识别和搜索后最多连续执行多少步；
-- `--tap-gap 0.12`：源树枝和目标树枝两次点击之间的等待秒数；
-- `--move-wait 0.30`：普通移动后的等待秒数；
+- `--tap-gap 0.20`：源树枝和目标树枝两次独立点击之间的额外等待秒数；WDA 请求处理本身还会提供触控间隔；
+- `--move-wait 0.20`：普通移动完成后的额外等待秒数；下一次 WDA 请求处理期间游戏动画仍可继续；
 - `--elimination-wait 0.55`：树枝消除后的等待秒数；
 - `--capture-interval 0.10`、`--capture-attempts 5`：稳定截图的间隔和最多尝试次数；
 - `--interruption-timeout 300`：等待广告关闭或棋盘恢复的最长秒数；
@@ -173,7 +173,8 @@ iPhone 截图通常使用 Retina 像素，而 WDA 点击使用逻辑点。程序
 
 `play` 的速度默认值为束宽 `120`、搜索时限 `2` 秒和每批最多 `8` 步；每次消除树枝后
 都会重新截图计算。iOS 控制器会缓存截图、点击接口和窗口缩放尺寸，正常批次之间也不会
-重复点击中央空白区域；仅在首次启动、点击未生效或中断恢复时清除残留选择。`analyze`
+重复点击中央空白区域；批次内每完成两次移动校验一次实际棋盘，批次结束仍通过稳定截图
+校验最终状态；仅在首次启动、点击未生效或中断恢复时清除残留选择。`analyze`
 仍使用束宽 `2000`、搜索时限 `20` 秒，适合离线分析。如果实机动画较慢，可先增加
 `--move-wait` 和 `--elimination-wait`；如果偶发点击未生效，可减小 `--moves-per-plan`。
 
