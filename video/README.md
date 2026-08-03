@@ -1,0 +1,37 @@
+# Beam Search 核心动画
+
+本目录包含一段约 75 秒的 Manim Community Edition 动画：
+
+- 使用六根树枝、四种原创矢量小鸟；
+- 先展示束宽 1 的路线两步后卡死；
+- 倒放后展示束宽 3 的“展开—评分—保留”过程；
+- 最后播放经过项目规则验证的 12 步完整解法；
+- 输出为 1920×1080、30fps、H.264 MP4。
+
+## 文件
+
+- `beam_search_core.py`：Manim 源码；
+- `manim.cfg`：项目渲染配置；
+- `render.sh`：最终渲染脚本；
+- `beam-search-core-1080p.mp4`：最终成片，渲染后生成；
+- `beam-search-core-thumbnail.png`：结尾画面缩略图；
+- `ManimCE从零到项目实战.md`：面向零基础的完整制作教程；
+- `media/`：Manim 的中间媒体和缓存输出。
+
+## 渲染
+
+```bash
+cd video
+bash render.sh
+```
+
+开发阶段可显式覆盖分辨率和帧率，生成低清预览：
+
+```bash
+cd video
+XDG_CACHE_HOME=/tmp/suanniao-manim-cache \
+  manim --config_file manim.cfg \
+  -r 854,480 --fps 15 \
+  -o beam-search-preview \
+  beam_search_core.py BeamSearchCore
+```

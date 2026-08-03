@@ -39,6 +39,7 @@ class DeviceController(Protocol):
         interval: float = 0.25,
         attempts: int = 8,
         difference_threshold: float = 1.5,
+        initial: Image.Image | None = None,
     ) -> Image.Image: ...
 
     def tap(self, x: int, y: int) -> None: ...
@@ -67,8 +68,9 @@ class StableCaptureMixin:
         interval: float = 0.25,
         attempts: int = 8,
         difference_threshold: float = 1.5,
+        initial: Image.Image | None = None,
     ) -> Image.Image:
-        previous = self.capture()
+        previous = initial if initial is not None else self.capture()
         for _ in range(attempts - 1):
             time.sleep(interval)
             current = self.capture()

@@ -20,6 +20,8 @@ from .solution_html import write_solution_animation
 from .solver import BeamSolver, SolveResult
 from .vision import BoardRecognizer, DetectedBranch, RecognitionError, RecognitionResult
 
+MID_BATCH_VALIDATION_INTERVAL = 8
+
 
 def _symbol(value: int) -> str:
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -177,6 +179,8 @@ def _capture_game_board(
     run_directory: Path,
     turn_name: str,
     previous_summary: tuple[int, int] | None = None,
+    fast_expected_key: tuple[Branch, ...] | None = None,
+    expected_summary: tuple[int, int] | None = None,
 ) -> tuple[Image.Image, RecognitionResult]:
     deadline = time.monotonic() + args.interruption_timeout
     interruption_index = 0
@@ -184,18 +188,52 @@ def _capture_game_board(
     manual_prompted = False
 
     while True:
-        screenshot = controller.capture_stable(
-            interval=args.capture_interval,
-            attempts=args.capture_attempts,
+        debug_directory = (
+            run_directory / f"{turn_name}-clusters"
+            if args.debug_reports == "live"
+            else None
         )
+        initial: Image.Image | None = None
+        if fast_expected_key is not None and expected_summary is not None:
+            initial = controller.capture()
+            if recognizer.has_game_board(initial):
+                try:
+                    fast_recognition = recognizer.read(
+                        initial,
+                        debug_dir=debug_directory,
+                    )
+                except RecognitionError:
+                    fast_recognition = None
+                if (
+                    fast_recognition is not None
+                    and _recognition_summary(fast_recognition) == expected_summary
+                    and _visible_state_key(fast_recognition.state)
+                    == fast_expected_key
+                ):
+                    _save_play_screenshot(
+                        initial,
+                        run_directory,
+                        f"{turn_name}.png",
+                        args.save_frames,
+                    )
+                    print("单截图严格校验通过，跳过第二次截图。")
+                    return initial, fast_recognition
+            print("单截图未严格匹配预期棋盘，继续稳定截图。")
+
+        if initial is None:
+            screenshot = controller.capture_stable(
+                interval=args.capture_interval,
+                attempts=args.capture_attempts,
+            )
+        else:
+            screenshot = controller.capture_stable(
+                interval=args.capture_interval,
+                attempts=args.capture_attempts,
+                initial=initial,
+            )
         recognition: RecognitionResult | None = None
         has_board = recognizer.has_game_board(screenshot)
         if has_board:
-            debug_directory = (
-                run_directory / f"{turn_name}-clusters"
-                if args.debug_reports == "live"
-                else None
-            )
             try:
                 recognition = recognizer.read(
                     screenshot,
@@ -321,6 +359,17 @@ def _physical_state_key(state: BoardState) -> tuple[Branch, ...]:
     return tuple(normalized)
 
 
+def _visible_state_key(state: BoardState) -> tuple[Branch, ...]:
+    """Compare only branches that remain visible after an elimination."""
+
+    return _physical_state_key(
+        BoardState(
+            tuple(branch for branch in state.branches if branch != REMOVED),
+            state.capacity,
+        )
+    )
+
+
 def analyze(args: argparse.Namespace) -> int:
     debug_directory = args.debug_dir or args.image.with_name(
         f"{args.image.stem}-clusters"
@@ -409,6 +458,7 @@ def play(args: argparse.Namespace) -> int:
     print(f"run_debug_dir={run_directory}")
     previous_key: tuple[tuple[int, ...], ...] | None = None
     expected_key: tuple[Branch, ...] | None = None
+    fast_expected_key: tuple[Branch, ...] | None = None
     expected_summary: tuple[int, int] | None = None
     previous_summary: tuple[int, int] | None = None
     no_move_key: tuple[Branch, ...] | None = None
@@ -429,6 +479,8 @@ def play(args: argparse.Namespace) -> int:
                 run_directory,
                 turn_name,
                 previous_summary,
+                fast_expected_key,
+                expected_summary,
             )
             current_summary = _recognition_summary(recognition)
             previous_summary = current_summary
@@ -452,6 +504,7 @@ def play(args: argparse.Namespace) -> int:
                 previous_key = None
                 unchanged = 0
             expected_key = None
+            fast_expected_key = None
             expected_summary = None
 
             # Reset once at startup and after uncertain device state. Successful
@@ -504,9 +557,13 @@ def play(args: argparse.Namespace) -> int:
             interrupted = False
             for batch_index, move in enumerate(batch):
                 # The stable capture after a batch also validates its final
-                # state, so only pay for an extra screenshot after each pair
-                # of moves inside longer batches.
-                if batch_index and batch_index % 2 == 0:
+                # state. For batches configured above the normal eight-move
+                # limit, validate before executing each ninth move. A branch
+                # elimination already ends the batch and forces a new capture.
+                if (
+                    batch_index
+                    and batch_index % MID_BATCH_VALIDATION_INTERVAL == 0
+                ):
                     quick_screen = controller.capture()
                     if not recognizer.has_game_board(quick_screen):
                         _save_play_screenshot(
@@ -566,13 +623,17 @@ def play(args: argparse.Namespace) -> int:
                 previous_key = None
                 unchanged = 0
                 expected_key = None
+                fast_expected_key = None
                 expected_summary = None
             elif virtual_state.is_finished:
                 print("Planned moves eliminated all remaining birds: game finished.")
                 return 0
             else:
                 eliminated = bool(batch and batch[-1].completes_branch)
-                expected_key = None if eliminated else _physical_state_key(virtual_state)
+                fast_expected_key = _visible_state_key(virtual_state)
+                expected_key = (
+                    None if eliminated else _physical_state_key(virtual_state)
+                )
                 expected_summary = (
                     (current_summary[0] - 1, current_summary[1] - 4)
                     if eliminated

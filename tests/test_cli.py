@@ -15,6 +15,7 @@ from suanniao.cli import (
     _is_plausible_board_transition,
     _physical_state_key,
     _prepare_manual_start,
+    _visible_state_key,
     analyze,
     build_parser,
     play,
@@ -170,6 +171,20 @@ def solve_result(*moves: Move, solved: bool = False) -> SolveResult:
     return SolveResult(tuple(moves), 0, 2, 10, 0.01, solved)
 
 
+def nine_move_batch() -> tuple[Move, ...]:
+    return (
+        Move(0, 1, 1),
+        Move(2, 3, 1),
+        Move(4, 5, 1),
+        Move(6, 7, 1),
+        Move(8, 9, 1),
+        Move(0, 2, 1),
+        Move(2, 0, 2),
+        Move(0, 2, 2),
+        Move(2, 0, 2),
+    )
+
+
 class PlayTests(unittest.TestCase):
     def test_ios_controller_disables_quiescence_wait(self) -> None:
         args = build_parser().parse_args(["play", "--platform", "ios"])
@@ -216,6 +231,12 @@ class PlayTests(unittest.TestCase):
 
         self.assertEqual(_physical_state_key(first), _physical_state_key(relabelled))
         self.assertNotEqual(_physical_state_key(first), _physical_state_key(moved))
+
+    def test_visible_state_key_ignores_eliminated_branch_placeholders(self) -> None:
+        predicted = BoardState(((), (-1,), (7,), (7, 7, 7)))
+        observed = BoardState(((), (3,), (3, 3, 3)))
+
+        self.assertEqual(_visible_state_key(predicted), _physical_state_key(observed))
 
     def test_analyze_saves_debug_report_to_default_sibling_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -476,7 +497,8 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(controller.taps), 4)
         self.assertEqual(len(controller.clear_selection_calls), 1)
-        self.assertEqual(len(controller.stable_capture_options), 2)
+        self.assertEqual(len(controller.stable_capture_options), 1)
+        self.assertEqual(controller.capture_calls, 1)
         self.assertEqual(
             recognizer.debug_directories,
             [
@@ -486,6 +508,39 @@ class PlayTests(unittest.TestCase):
         )
         self.assertEqual(controller.dismiss_calls, 0)
         self.assertTrue(controller.closed)
+
+    @patch("suanniao.cli.time.sleep", return_value=None)
+    def test_fast_board_mismatch_reuses_first_frame_for_stable_capture(
+        self, _sleep: object
+    ) -> None:
+        first = solid_image("gray")
+        stable = solid_image("white")
+        expected = sample_recognition(((), (1,), (1, 1, 1)))
+        mismatched = sample_recognition(((0,), (0, 0, 0), (1,), (1, 1, 1)))
+        controller = FakeController(
+            stable_screenshots=(stable,),
+            quick_screenshots=(first,),
+        )
+        recognizer = FakeRecognizer((mismatched, expected))
+        args = build_parser().parse_args(["play", "--debug-reports", "off"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            screenshot, recognition = _capture_game_board(
+                controller,
+                recognizer,
+                args,
+                Path(directory),
+                "turn-002",
+                (4, 8),
+                _physical_state_key(expected.state),
+                (3, 4),
+            )
+
+        self.assertIs(screenshot, stable)
+        self.assertIs(recognition, expected)
+        self.assertEqual(controller.capture_calls, 1)
+        self.assertEqual(len(controller.stable_capture_options), 1)
+        self.assertIs(controller.stable_capture_options[0]["initial"], first)
 
     @patch("suanniao.cli.time.sleep", return_value=None)
     def test_failed_elimination_is_detected_by_expected_summary(
@@ -542,13 +597,20 @@ class PlayTests(unittest.TestCase):
         board = solid_image("white")
         ad = solid_image("black")
         recognition = sample_recognition(
-            ((0, 1), (1,), (0, 2), (2,), (0, 3), (3,))
+            (
+                (0, 1),
+                (1,),
+                (0, 2),
+                (2,),
+                (0, 3),
+                (3,),
+                (0, 4),
+                (4,),
+                (0, 5),
+                (5,),
+            )
         )
-        first_solution = solve_result(
-            Move(0, 1, 1),
-            Move(2, 3, 1),
-            Move(4, 5, 1),
-        )
+        first_solution = solve_result(*nine_move_batch())
         controller = FakeController(
             stable_screenshots=(board, ad, board),
             quick_screenshots=(ad,),
@@ -563,7 +625,7 @@ class PlayTests(unittest.TestCase):
             [
                 "play",
                 "--moves-per-plan",
-                "3",
+                "9",
                 "--tap-gap",
                 "0",
                 "--move-wait",
@@ -586,7 +648,7 @@ class PlayTests(unittest.TestCase):
             ):
                 exit_code = play(args)
         self.assertEqual(exit_code, 2)
-        self.assertEqual(len(controller.taps), 4)
+        self.assertEqual(len(controller.taps), 16)
         self.assertEqual(controller.capture_calls, 1)
         self.assertEqual(controller.dismiss_calls, 0)
         self.assertIn("批量操作中检测到非棋盘画面", output.getvalue())
@@ -598,13 +660,20 @@ class PlayTests(unittest.TestCase):
     ) -> None:
         board = solid_image("white")
         unchanged = sample_recognition(
-            ((0, 1), (1,), (0, 2), (2,), (0, 3), (3,))
+            (
+                (0, 1),
+                (1,),
+                (0, 2),
+                (2,),
+                (0, 3),
+                (3,),
+                (0, 4),
+                (4,),
+                (0, 5),
+                (5,),
+            )
         )
-        first_solution = solve_result(
-            Move(0, 1, 1),
-            Move(2, 3, 1),
-            Move(4, 5, 1),
-        )
+        first_solution = solve_result(*nine_move_batch())
         controller = FakeController(
             stable_screenshots=(board, board),
             quick_screenshots=(board,),
@@ -615,7 +684,7 @@ class PlayTests(unittest.TestCase):
             [
                 "play",
                 "--moves-per-plan",
-                "3",
+                "9",
                 "--tap-gap",
                 "0",
                 "--move-wait",
@@ -639,7 +708,7 @@ class PlayTests(unittest.TestCase):
                 exit_code = play(args)
 
         self.assertEqual(exit_code, 2)
-        self.assertEqual(len(controller.taps), 4)
+        self.assertEqual(len(controller.taps), 16)
         self.assertEqual(controller.capture_calls, 1)
         self.assertEqual(len(controller.clear_selection_calls), 2)
         self.assertIn("实际棋盘与预期不一致", output.getvalue())

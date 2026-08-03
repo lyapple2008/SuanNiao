@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from suanniao.controller import WdaController, WdaError
+from suanniao.controller import StableCaptureMixin, WdaController, WdaError
 
 
 def png_base64(width: int, height: int) -> str:
@@ -15,6 +15,25 @@ def png_base64(width: int, height: int) -> str:
 
 
 class WdaControllerTests(unittest.TestCase):
+    def test_stable_capture_can_reuse_an_existing_first_frame(self) -> None:
+        first = Image.new("RGB", (20, 40), "white")
+        second = Image.new("RGB", (20, 40), "white")
+
+        class SequenceController(StableCaptureMixin):
+            def __init__(self) -> None:
+                self.capture_calls = 0
+
+            def capture(self) -> Image.Image:
+                self.capture_calls += 1
+                return second
+
+        controller = SequenceController()
+
+        result = controller.capture_stable(initial=first, interval=0, attempts=2)
+
+        self.assertIs(result, second)
+        self.assertEqual(controller.capture_calls, 1)
+
     def test_session_sets_bounded_quiescence_timeouts_once(self) -> None:
         screenshot = png_base64(300, 600)
         requests: list[tuple[str, str, object]] = []
