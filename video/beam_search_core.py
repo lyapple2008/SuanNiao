@@ -215,6 +215,27 @@ def make_branch(center: np.ndarray, side: str) -> VGroup:
     return VGroup(horizontal, fixed_cap)
 
 
+def make_stack_example(
+    center: np.ndarray,
+    side: str,
+    bird_types: tuple[int, ...],
+) -> tuple[VGroup, VGroup, VGroup, list[np.ndarray]]:
+    """Build a single horizontal stack for the opening modeling explanation."""
+    branch = make_branch(center, side)
+    fixed_slot = center + (LEFT if side == "left" else RIGHT) * 1.22
+    toward_center = RIGHT if side == "left" else LEFT
+    slots = [fixed_slot + toward_center * 0.81 * slot + UP * 0.36 for slot in range(4)]
+    birds = VGroup(
+        *[
+            BirdIcon(bird_type, scale_factor=0.92).move_to(slots[index])
+            for index, bird_type in enumerate(bird_types)
+        ]
+    )
+    branch.set_z_index(0)
+    birds.set_z_index(2)
+    return VGroup(branch, birds), branch, birds, slots
+
+
 class BirdBoard:
     def __init__(self, state: BoardState):
         self.state = state
@@ -514,6 +535,137 @@ class BeamSearchCore(Scene):
     def construct(self):
         background = make_background()
         self.add(background)
+
+        # First explain how the bird puzzle becomes a stack-search problem.
+        model_title = label("鸟类消除游戏，如何建模？", size=48).to_edge(UP, buff=0.34)
+        model_bar = Line(
+            model_title.get_left() + DOWN * 0.22,
+            model_title.get_right() + DOWN * 0.22,
+            color=SKY_DEEP,
+            stroke_width=5,
+        )
+        model_hint = label("树枝  →  栈", size=34, color=KEEP).next_to(
+            model_title, DOWN, buff=0.38
+        )
+        self.tplay(
+            FadeIn(model_title, shift=DOWN * 0.16),
+            Create(model_bar),
+            FadeIn(model_hint, shift=UP * 0.10),
+            run_time=1.0,
+        )
+        self.twait(0.4)
+
+        left_center = np.array([-2.30, 0.45, 0.0])
+        right_center = np.array([2.30, 0.45, 0.0])
+        left_stack, left_branch, left_birds, _ = make_stack_example(
+            left_center, "left", (0, 1, 2, 2)
+        )
+        right_stack, right_branch, _, right_slots = make_stack_example(
+            right_center, "right", ()
+        )
+        stack_diagram = VGroup(left_stack, right_stack)
+        self.tplay(
+            LaggedStart(
+                FadeIn(left_branch, shift=UP * 0.10),
+                FadeIn(right_branch, shift=UP * 0.10),
+                lag_ratio=0.12,
+            ),
+            LaggedStart(*[FadeIn(bird, scale=0.75) for bird in left_birds], lag_ratio=0.08),
+            run_time=1.4,
+        )
+        self.twait(0.5)
+
+        stack_caption = label("一根树枝 = 一个栈", size=34).move_to(DOWN * 0.72)
+        fixed_tag = label("栈底", size=24, color=MUTED, weight="NORMAL").move_to(
+            left_branch[0].get_start() + DOWN * 0.42
+        )
+        top_tag = label("栈顶", size=24, color=KEEP).move_to(
+            left_branch[0].get_end() + DOWN * 0.42
+        )
+        top_arrow = Arrow(
+            top_tag.get_top() + UP * 0.02,
+            left_branch[0].get_end() + UP * 0.05,
+            buff=0.05,
+            color=KEEP,
+            stroke_width=3,
+            tip_length=0.13,
+        )
+        self.tplay(
+            FadeIn(stack_caption, shift=UP * 0.10),
+            FadeIn(fixed_tag),
+            FadeIn(top_tag),
+            Create(top_arrow),
+            run_time=0.9,
+        )
+        self.twait(0.6)
+
+        rule_line = label("先进后出：每次只移动栈顶同类鸟", size=34, color=INK).move_to(
+            DOWN * 1.55
+        )
+        top_same = VGroup(*left_birds[-2:])
+        top_highlight = RoundedRectangle(
+            width=top_same.width + 0.22,
+            height=top_same.height + 0.20,
+            corner_radius=0.20,
+            stroke_color=GOLD,
+            stroke_width=5,
+            fill_opacity=0,
+        ).move_to(top_same)
+        self.tplay(
+            FadeIn(rule_line, shift=UP * 0.10),
+            Create(top_highlight),
+            run_time=0.8,
+        )
+        self.twait(0.5)
+
+        moving_birds = list(left_birds[-2:])
+        flights = [
+            MoveAlongPath(
+                bird,
+                ArcBetweenPoints(bird.get_center(), right_slots[index], angle=-PI / 3),
+                rate_func=ease_in_out_cubic,
+            )
+            for index, bird in enumerate(moving_birds)
+        ]
+        self.tplay(
+            AnimationGroup(*flights, lag_ratio=0.10),
+            FadeOut(top_highlight),
+            FadeOut(top_arrow),
+            run_time=1.3,
+        )
+        self.twait(0.6)
+
+        goal_left, _, _, _ = make_stack_example(left_center, "left", (0, 0, 0, 0))
+        goal_right, _, _, _ = make_stack_example(right_center, "right", ())
+        goal_diagram = VGroup(goal_left, goal_right)
+        goal_title = label("目标：每根树枝都是同类鸟，或者为空", size=40, color=KEEP).move_to(
+            UP * 2.30
+        )
+        goal_marks = VGroup(
+            label("✓ 同类", size=30, color=KEEP).move_to(left_center + UP * 1.22),
+            label("✓ 空", size=30, color=KEEP).move_to(right_center + UP * 1.22),
+        )
+        self.tplay(
+            FadeOut(model_hint),
+            FadeOut(stack_diagram),
+            FadeOut(stack_caption),
+            FadeOut(fixed_tag),
+            FadeOut(top_tag),
+            FadeOut(rule_line),
+            FadeIn(goal_diagram, scale=0.92),
+            FadeIn(goal_title, shift=UP * 0.10),
+            LaggedStart(*[FadeIn(mark, shift=UP * 0.08) for mark in goal_marks], lag_ratio=0.15),
+            run_time=1.0,
+        )
+        self.twait(1.0)
+        self.tplay(
+            FadeOut(model_title),
+            FadeOut(model_bar),
+            FadeOut(goal_title),
+            FadeOut(goal_diagram),
+            FadeOut(goal_marks),
+            run_time=0.8,
+        )
 
         title = label("只看眼前，会发生什么？", size=48).to_edge(UP, buff=0.34)
         title_bar = Line(
