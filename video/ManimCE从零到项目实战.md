@@ -140,10 +140,10 @@ MoveAlongPath(bird, path)
 
 ### 2.4 VGroup：把多个对象组合成一个对象
 
-一个小鸟并不是一张图片，而是由身体、翅膀、眼睛、嘴、尾巴和脚组成。可以使用 `VGroup` 把它们组合起来：
+当前视频中的一只鸟由彩色圆形和字母组成。可以使用 `VGroup` 把它们组合起来：
 
 ```python
-bird = VGroup(body, wing, eye, pupil, beak)
+bird = VGroup(circle, letter)
 bird.scale(0.8)
 bird.shift(RIGHT * 2)
 ```
@@ -177,17 +177,17 @@ video/
 
 | 大致行号 | 内容 | 作用 |
 |---:|---|---|
-| 1–51 | 导入与项目路径 | 引入 Manim、NumPy 和游戏模型 |
-| 56–88 | 输出规格、字体和调色板 | 统一视频视觉风格 |
-| 91–138 | 教学棋盘、移动路径和验证 | 保证故事中的卡死与解法真实有效 |
-| 141–192 | 文字与背景函数 | 生成中文文字、天空和云朵 |
-| 195–281 | `BirdIcon` | 使用基础图形制作原创矢量小鸟 |
-| 284–304 | `make_branch` | 制作树枝 |
-| 307–428 | `BirdBoard` | 把棋盘状态转换为可动画对象 |
-| 431–489 | `SnapshotCard` | 制作 Beam Search 的候选状态缩略图 |
-| 492–524 | 评分与下一层搜索 | 生成真实候选状态并保留前三名 |
-| 527–572 | UI 辅助组件 | 徽章和最终对比卡片 |
-| 575–980 | `BeamSearchCore` | 编排完整的 75 秒时间线 |
+| 1–45 | 导入与项目路径 | 引入 Manim、NumPy 和游戏模型 |
+| 48–70 | 时长、字体和调色板 | 统一视频视觉风格 |
+| 73–120 | 教学棋盘、移动路径和验证 | 保证故事中的卡死与解法真实有效 |
+| 123–174 | 文字与背景函数 | 生成中文文字、天空和云朵 |
+| 177–201 | `BirdIcon` | 使用圆形和字母制作鸟类型标记 |
+| 204–215 | `make_branch` | 制作左右镜像的横线树枝和固定端竖线 |
+| 218–342 | `BirdBoard` | 把棋盘状态转换为可动画对象 |
+| 345–415 | `SnapshotCard` | 制作 Beam Search 的候选状态缩略图 |
+| 418–450 | 评分与下一层搜索 | 生成真实候选状态并保留前三名 |
+| 453–498 | UI 辅助组件 | 徽章和最终对比卡片 |
+| 501 行以后 | `BeamSearchCore` | 编排完整的 75 秒时间线 |
 
 建议学习时先从 `BeamSearchCore.construct()` 阅读，再回头看它调用的组件。这样会先理解“视频做了什么”，再理解“组件如何实现”。
 
@@ -403,12 +403,13 @@ return (
 
 ### 7.1 像素尺寸和场景坐标不是一回事
 
-下面代码设置输出视频像素：
+当前项目通过 `manim.cfg` 或命令行设置输出视频像素：
 
-```python
-config.pixel_width = 1920
-config.pixel_height = 1080
-config.frame_rate = 30
+```ini
+[CLI]
+pixel_width = 1920
+pixel_height = 1080
+frame_rate = 30
 ```
 
 它不会把坐标系变成 `0–1920` 和 `0–1080`。场景仍然使用约 `14.22 × 8` 的逻辑坐标，只是渲染时映射到更多像素。
@@ -513,9 +514,9 @@ XDG_CACHE_HOME="$CACHE_DIR" manim ...
 XDG_CACHE_HOME=/tmp/suanniao-manim-cache manim ...
 ```
 
-## 10. 用基础图形制作原创小鸟
+## 10. 用圆形和字母表示同类鸟
 
-`BirdIcon` 是理解“如何用 Manim 组合复杂对象”的最佳入口。
+`BirdIcon` 是理解“如何用 Manim 组合图形和文字”的最佳入口。
 
 它继承 `VGroup`：
 
@@ -525,23 +526,18 @@ class BirdIcon(VGroup):
         super().__init__()
 ```
 
-小鸟由以下对象组成：
+字母鸟由以下对象组成：
 
-| 部位 | Manim 对象 |
+| 部分 | Manim 对象 |
 |---|---|
-| 身体 | `Ellipse` |
-| 翅膀 | `Ellipse` |
-| 眼睛 | `Circle` |
-| 瞳孔 | `Circle` |
-| 嘴 | `Polygon` |
-| 尾巴 | `Polygon` |
-| 脚 | `Line` |
-| 头冠、斑点等差异 | `Line`、`Triangle`、`Circle` |
+| 彩色底 | `Circle` |
+| 类型字母 | `Text` |
+| 整体对象 | `VGroup` |
 
-最后把它们加入同一个组：
+圆形使用 `BIRD_COLORS` 中的类型颜色，字母使用 `A`、`B`、`C`、`D`：
 
 ```python
-self.add(tail, body, wing, eye, pupil, beak, detail, foot_left, foot_right)
+self.add(body, letter)
 self.scale(scale_factor)
 ```
 
@@ -554,15 +550,15 @@ self.play(FadeIn(bird))
 self.play(bird.animate.shift(RIGHT * 4))
 ```
 
-### 10.1 为什么不直接使用 PNG
+### 10.1 为什么使用圆形字母
 
-使用 Manim 基础图形的优点：
+这种抽象表示的优点：
 
+- 同类鸟只需要相同字母，算法含义非常明确；
+- 左右镜像后不需要处理鸟头朝向；
+- 缩略卡片中仍然容易辨认；
 - 任意缩放仍然清晰；
-- 颜色可以用代码统一替换；
-- 各个部位可以分别动画；
-- 不依赖外部素材文件；
-- 避免直接复刻游戏原始美术。
+- 不依赖外部素材文件。
 
 PNG 也可以使用：
 
@@ -575,16 +571,36 @@ bird.scale(0.5)
 
 如果使用 PNG，最好提供透明背景和足够高的分辨率。
 
-## 11. 树枝、图层和 z-index
+## 11. 左右镜像树枝、固定端和 z-index
 
-树枝通过多根 `Line` 叠加获得简单的立体感：
+每根树枝由一条横线和一条竖线组成：
 
 ```python
-shadow = Line(..., color=WOOD, stroke_width=15)
-highlight = Line(..., color=WOOD_LIGHT, stroke_width=6)
+horizontal = Line(start, end, color=WOOD, stroke_width=8)
+fixed_cap = Line(fixed_point + DOWN * 0.12, fixed_point + UP * 0.78)
 ```
 
-粗的深色线作为主体，细的浅色线作为高光。
+横线代表树枝，竖线代表这一端被封住，不能从这里移出。
+
+六根树枝按左右两列排列：
+
+- 左侧树枝：固定端在左，可移动端朝右、朝向画面中心；
+- 右侧树枝：固定端在右，可移动端朝左、朝向画面中心；
+- `BoardState` 中的元组始终保持“固定端 → 可移动端”；
+- 因此右侧树枝的视觉槽位必须反向排列。
+
+代码先判断树枝位于哪一侧：
+
+```python
+side = "left" if index % 2 == 0 else "right"
+```
+
+再计算从固定端指向中心的方向：
+
+```python
+fixed_slot = center + (LEFT if side == "left" else RIGHT) * 1.22
+toward_center = RIGHT if side == "left" else LEFT
+```
 
 树枝和小鸟可能在添加顺序上互相遮挡，因此代码显式设置图层：
 
@@ -862,7 +878,7 @@ from manim.utils.rate_functions import ease_in_out_cubic
 
 - 圆角矩形作为卡片；
 - 细线作为树枝；
-- 小圆点、眼睛和三角嘴作为迷你小鸟；
+- 带字母的小圆形作为迷你鸟类型；
 - 已消除树枝使用绿色虚线。
 
 创建四个候选状态：
@@ -1025,7 +1041,7 @@ format = mp4
 progress_bar = display
 ```
 
-源码顶部也设置了分辨率和帧率，这是为了直接运行文件时仍能得到正确规格。
+源码不直接写死输出像素和帧率，因此命令行可以覆盖配置并生成真正的低清预览。
 
 最终渲染脚本再次通过命令行设置：
 
@@ -1098,12 +1114,12 @@ BIRD_COLORS = (
 
 ### 23.4 修改小鸟造型
 
-进入 `BirdIcon.__init__()`，修改：
+进入 `BirdIcon.__init__()`，可以修改：
 
-- `body` 的宽高；
-- `wing` 的位置和旋转；
-- `beak` 的三个顶点；
-- `detail` 中不同类型的头冠和斑点。
+- 圆形的 `radius`；
+- 圆形的轮廓宽度；
+- 字母的 `font_size` 和字重；
+- 不同颜色上的文字颜色。
 
 建议一次只改一个部位，并先渲染最后一帧或一个单独测试 Scene。
 
@@ -1431,9 +1447,9 @@ ReplacementTransform(old, new)
 
 目标：理解集中式调色板。
 
-### 练习 3：给一种鸟增加头冠
+### 练习 3：修改一种字母鸟的样式
 
-修改 `BirdIcon` 中某个 `bird_type` 的 `detail`。
+修改 `BirdIcon` 中某个 `bird_type` 的圆形轮廓或字母颜色。
 
 目标：理解基础形状和 `VGroup`。
 
@@ -1590,7 +1606,7 @@ ffmpeg -v error -i beam-search-core-1080p.mp4 -f null -
 
 ### 结论二：复杂画面来自简单对象的组合
 
-小鸟、树枝、棋盘、搜索卡片都由 `Circle`、`Ellipse`、`Line`、`Polygon`、`Text` 和 `VGroup` 组成。不要一开始就追求复杂特效，先把对象结构设计清楚。
+字母鸟、树枝、棋盘和搜索卡片都由 `Circle`、`Line`、`Text`、`RoundedRectangle` 和 `VGroup` 等简单对象组成。不要一开始就追求复杂特效，先把对象结构设计清楚。
 
 ### 结论三：视频制作是时间线工程
 

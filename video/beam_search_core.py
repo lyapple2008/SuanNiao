@@ -14,7 +14,6 @@ from manim import (
     DashedLine,
     DOWN,
     DR,
-    Ellipse,
     FadeIn,
     FadeOut,
     GrowFromCenter,
@@ -23,9 +22,7 @@ from manim import (
     Line,
     ManimColor,
     MoveAlongPath,
-    ORIGIN,
     PI,
-    Polygon,
     Rectangle,
     ReplacementTransform,
     RIGHT,
@@ -33,14 +30,11 @@ from manim import (
     Scene,
     Star,
     Text,
-    Triangle,
     UP,
     UR,
     VGroup,
     WHITE,
     config,
-    smooth,
-    there_and_back,
 )
 from manim.utils.rate_functions import ease_in_out_cubic, ease_out_back, ease_out_cubic
 
@@ -51,12 +45,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from suanniao.model import BoardState, Move, REMOVED  # noqa: E402
 
 
-# The CLI also supplies these values for the final render. Keeping them here
-# makes the source render correctly when invoked directly.
-config.pixel_width = 1920
-config.pixel_height = 1080
-config.frame_rate = 30
-
 TARGET_DURATION = 75.0
 FONT = "Hiragino Sans GB"
 
@@ -66,7 +54,6 @@ CLOUD = ManimColor("#F8FDFF")
 INK = ManimColor("#23364A")
 MUTED = ManimColor("#6B7E8F")
 WOOD = ManimColor("#8D552F")
-WOOD_LIGHT = ManimColor("#C58145")
 KEEP = ManimColor("#2FA36B")
 KEEP_LIGHT = ManimColor("#BFEED6")
 DANGER = ManimColor("#E05B52")
@@ -80,12 +67,7 @@ BIRD_COLORS = (
     ManimColor("#E76F51"),  # coral
     ManimColor("#7A5195"),  # purple
 )
-BIRD_ACCENTS = (
-    ManimColor("#A9CBE8"),
-    ManimColor("#FFF0A8"),
-    ManimColor("#F7B3A4"),
-    ManimColor("#C7AEDB"),
-)
+BIRD_LETTERS = ("A", "B", "C", "D")
 
 
 INITIAL_STATE = BoardState(
@@ -193,115 +175,44 @@ def make_background() -> VGroup:
 
 
 class BirdIcon(VGroup):
-    """An original vector bird built from basic Manim shapes."""
+    """A colored circular token with a letter identifying the bird type."""
 
     def __init__(self, bird_type: int, scale_factor: float = 1.0):
         super().__init__()
         color = BIRD_COLORS[bird_type]
-        accent = BIRD_ACCENTS[bird_type]
+        text_color = INK if bird_type == 1 else WHITE
 
-        tail = Polygon(
-            [-0.34, -0.02, 0],
-            [-0.57, 0.13, 0],
-            [-0.52, -0.19, 0],
+        body = Circle(
+            radius=0.34,
             fill_color=color,
             fill_opacity=1,
             stroke_color=INK,
-            stroke_width=1.5,
+            stroke_width=2.4,
         )
-        body = Ellipse(
-            width=0.72,
-            height=0.62,
-            fill_color=color,
-            fill_opacity=1,
-            stroke_color=INK,
-            stroke_width=1.7,
-        )
-        wing = Ellipse(
-            width=0.31,
-            height=0.23,
-            fill_color=accent,
-            fill_opacity=1,
-            stroke_color=INK,
-            stroke_width=1.1,
-        ).rotate(-0.25).shift(LEFT * 0.09 + DOWN * 0.05)
-        eye = Circle(
-            radius=0.092,
-            fill_color=WHITE,
-            fill_opacity=1,
-            stroke_color=INK,
-            stroke_width=1.1,
-        ).shift(RIGHT * 0.19 + UP * 0.12)
-        pupil = Circle(radius=0.035, fill_color=INK, fill_opacity=1, stroke_width=0).move_to(
-            eye.get_center() + RIGHT * 0.018
-        )
-        beak = Polygon(
-            [0.33, 0.06, 0],
-            [0.55, 0.0, 0],
-            [0.33, -0.08, 0],
-            fill_color=GOLD,
-            fill_opacity=1,
-            stroke_color=INK,
-            stroke_width=1.1,
-        )
+        letter = Text(
+            BIRD_LETTERS[bird_type],
+            font=FONT,
+            font_size=30,
+            color=text_color,
+            weight="BOLD",
+        ).move_to(body)
 
-        detail = VGroup()
-        if bird_type == 0:
-            detail.add(
-                Line([-0.06, 0.28, 0], [-0.15, 0.48, 0], color=INK, stroke_width=1.4),
-                Line([0.03, 0.29, 0], [0.02, 0.51, 0], color=INK, stroke_width=1.4),
-            )
-        elif bird_type == 1:
-            detail.add(
-                Triangle(
-                    fill_color=accent,
-                    fill_opacity=1,
-                    stroke_color=INK,
-                    stroke_width=1.0,
-                )
-                .scale(0.10)
-                .rotate(-0.25)
-                .shift(UP * 0.36 + LEFT * 0.05)
-            )
-        elif bird_type == 2:
-            detail.add(
-                Circle(radius=0.065, fill_color=accent, fill_opacity=1, stroke_width=0).shift(
-                    RIGHT * 0.16 + DOWN * 0.10
-                )
-            )
-        else:
-            detail.add(
-                Line([-0.22, -0.2, 0], [0.12, 0.15, 0], color=accent, stroke_width=3.2)
-            )
-
-        foot_left = Line([-0.12, -0.31, 0], [-0.13, -0.39, 0], color=INK, stroke_width=1.2)
-        foot_right = Line([0.09, -0.31, 0], [0.08, -0.39, 0], color=INK, stroke_width=1.2)
-
-        self.add(tail, body, wing, eye, pupil, beak, detail, foot_left, foot_right)
+        self.add(body, letter)
         self.scale(scale_factor)
 
 
-def make_branch(center: np.ndarray) -> VGroup:
+def make_branch(center: np.ndarray, side: str) -> VGroup:
     start = center + LEFT * 1.58
     end = center + RIGHT * 1.58
-    shadow = Line(start + DOWN * 0.035, end + DOWN * 0.035, color=WOOD, stroke_width=15)
-    highlight = Line(start + UP * 0.035, end + UP * 0.035, color=WOOD_LIGHT, stroke_width=6)
-    fixed = Line(
-        start + LEFT * 0.08 + DOWN * 0.04,
-        start + LEFT * 0.42 + DOWN * 0.42,
+    horizontal = Line(start, end, color=WOOD, stroke_width=8)
+    fixed_point = start if side == "left" else end
+    fixed_cap = Line(
+        fixed_point + DOWN * 0.12,
+        fixed_point + UP * 0.78,
         color=WOOD,
-        stroke_width=10,
+        stroke_width=8,
     )
-    twig = Line(
-        center + RIGHT * 0.72,
-        center + RIGHT * 0.98 + UP * 0.25,
-        color=WOOD,
-        stroke_width=6,
-    )
-    knot = Circle(radius=0.055, fill_color=WOOD, fill_opacity=1, stroke_width=0).move_to(
-        center + LEFT * 0.62
-    )
-    return VGroup(shadow, highlight, fixed, twig, knot)
+    return VGroup(horizontal, fixed_cap)
 
 
 class BirdBoard:
@@ -314,8 +225,11 @@ class BirdBoard:
         self.group = VGroup()
 
         for index, (center, branch) in enumerate(zip(self.positions, state.branches)):
-            branch_group = make_branch(center)
-            slots = [center + LEFT * 1.22 + RIGHT * 0.81 * slot + UP * 0.34 for slot in range(4)]
+            side = "left" if index % 2 == 0 else "right"
+            branch_group = make_branch(center, side)
+            fixed_slot = center + (LEFT if side == "left" else RIGHT) * 1.22
+            toward_center = RIGHT if side == "left" else LEFT
+            slots = [fixed_slot + toward_center * 0.81 * slot + UP * 0.36 for slot in range(4)]
             bird_mobjects: list[BirdIcon] = []
 
             if branch == REMOVED:
@@ -448,16 +362,19 @@ class SnapshotCard(VGroup):
         for y in y_centers:
             for x in x_centers:
                 branch = state.branches[branch_index]
+                side = "left" if branch_index % 2 == 0 else "right"
+                start = np.array([x - 0.49, y - 0.11, 0.0])
+                end = np.array([x + 0.49, y - 0.11, 0.0])
                 line = Line(
-                    [x - 0.49, y - 0.11, 0],
-                    [x + 0.49, y - 0.11, 0],
+                    start,
+                    end,
                     color=WOOD,
                     stroke_width=3.3,
                 )
                 if branch == REMOVED:
                     line = DashedLine(
-                        [x - 0.49, y - 0.11, 0],
-                        [x + 0.49, y - 0.11, 0],
+                        start,
+                        end,
                         color=KEEP,
                         stroke_width=2.2,
                         dash_length=0.08,
@@ -465,8 +382,20 @@ class SnapshotCard(VGroup):
                 self.add(line)
 
                 if branch != REMOVED:
+                    fixed_point = start if side == "left" else end
+                    fixed_cap = Line(
+                        fixed_point + DOWN * 0.03,
+                        fixed_point + UP * 0.28,
+                        color=WOOD,
+                        stroke_width=3.3,
+                    )
+                    self.add(fixed_cap)
+                    fixed_x = x - 0.36 if side == "left" else x + 0.36
+                    direction = 1 if side == "left" else -1
                     for slot, bird_type in enumerate(branch):
-                        point = np.array([x - 0.36 + slot * 0.24, y + 0.02, 0.0])
+                        point = np.array(
+                            [fixed_x + direction * slot * 0.24, y + 0.02, 0.0]
+                        )
                         body = Circle(
                             radius=0.105,
                             fill_color=BIRD_COLORS[bird_type],
@@ -474,18 +403,15 @@ class SnapshotCard(VGroup):
                             stroke_color=INK,
                             stroke_width=0.7,
                         ).move_to(point)
-                        eye = Circle(
-                            radius=0.022,
-                            fill_color=WHITE,
-                            fill_opacity=1,
-                            stroke_width=0,
-                        ).move_to(point + RIGHT * 0.04 + UP * 0.025)
-                        beak = Triangle(
-                            fill_color=GOLD,
-                            fill_opacity=1,
-                            stroke_width=0,
-                        ).scale(0.025).rotate(-PI / 2).move_to(point + RIGHT * 0.12)
-                        self.add(body, eye, beak)
+                        text_color = INK if bird_type == 1 else WHITE
+                        letter = Text(
+                            BIRD_LETTERS[bird_type],
+                            font=FONT,
+                            font_size=8,
+                            color=text_color,
+                            weight="BOLD",
+                        ).move_to(point)
+                        self.add(body, letter)
                 branch_index += 1
 
 
@@ -630,7 +556,6 @@ class BeamSearchCore(Scene):
         state_after_first = INITIAL_STATE.apply(GREEDY_MOVES[0])
         board.move_animation(self, GREEDY_MOVES[0], move_time=1.65)
         self.twait(0.55)
-        state_after_second = state_after_first.apply(GREEDY_MOVES[1])
         board.move_animation(self, GREEDY_MOVES[1], move_time=1.35)
         self.twait(0.55)
 
