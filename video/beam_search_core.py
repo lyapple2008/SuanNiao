@@ -503,18 +503,17 @@ def tree_edge(start: np.ndarray, end: np.ndarray, color=MUTED, width: float = 2.
 
 SEARCH_TREE_NODES: dict[str, dict] = {
     "R": {"pos": (0.0, 1.75), "children": ("A", "B", "C")},
-    "A": {"pos": (-2.85, 0.35), "children": ("D", "E", "F")},
+    "A": {"pos": (-2.85, 0.35), "children": ("D", "F")},
     "B": {"pos": (0.0, 0.35), "children": ("S_opt",)},
     "C": {"pos": (2.85, 0.35), "children": ("G",)},
-    "D": {"pos": (-3.75, -0.75), "children": ("X",)},
-    "E": {"pos": (-2.55, -0.75), "children": ()},
-    "F": {"pos": (-1.55, -0.75), "children": ("S2",)},
-    "G": {"pos": (2.85, -0.75), "children": ("H",)},
-    "X": {"pos": (-3.75, -1.85), "children": (), "leaf": "dead"},
-    "S2": {"pos": (-1.55, -1.85), "children": (), "leaf": "solution"},
-    "S_opt": {"pos": (0.0, -0.75), "children": (), "leaf": "solution", "optimal": True},
-    "H": {"pos": (2.85, -1.85), "children": ("S3",)},
-    "S3": {"pos": (2.85, -2.75), "children": (), "leaf": "solution"},
+    "D": {"pos": (-3.45, -0.55), "children": ("X",)},
+    "F": {"pos": (-1.75, -0.55), "children": ("S2",)},
+    "G": {"pos": (2.85, -0.55), "children": ("H",)},
+    "X": {"pos": (-3.45, -1.65), "children": (), "leaf": "dead"},
+    "S2": {"pos": (-1.75, -1.65), "children": (), "leaf": "solution"},
+    "S_opt": {"pos": (0.0, -0.55), "children": (), "leaf": "solution", "optimal": True},
+    "H": {"pos": (2.85, -1.65), "children": ("S3",)},
+    "S3": {"pos": (2.85, -2.55), "children": (), "leaf": "solution"},
 }
 
 
@@ -668,6 +667,30 @@ class SearchTreeGraph:
         return lines
 
 
+def validate_search_tree() -> None:
+    dfs_order = SearchTreeGraph.dfs_order(SEARCH_TREE_NODES)
+    bfs_order = SearchTreeGraph.bfs_order(SEARCH_TREE_NODES)
+    graph = SearchTreeGraph()
+
+    dfs_first_leaf = next(node for node in dfs_order if SEARCH_TREE_NODES[node].get("leaf"))
+    dfs_first_solution = graph.first_solution(dfs_order)
+    bfs_first_solution = graph.first_solution(bfs_order)
+
+    if dfs_first_leaf != "X":
+        raise RuntimeError("DFS should first reach dead leaf X")
+    if dfs_first_solution != "S2":
+        raise RuntimeError("DFS should first reach solution S2")
+    if bfs_first_solution != "S_opt":
+        raise RuntimeError("BFS should first reach optimal solution S_opt")
+    if len(graph.path_to("S2")) - 1 != 3:
+        raise RuntimeError("DFS first solution should take 3 steps")
+    if len(graph.path_to("S_opt")) - 1 != 2:
+        raise RuntimeError("BFS first solution should take 2 steps")
+
+
+validate_search_tree()
+
+
 def make_pruning_demo() -> VGroup:
     """Two branch permutations that share one canonical search key."""
     left_state = BoardState(
@@ -741,12 +764,12 @@ class BeamSearchCore(Scene):
         self,
         graph: SearchTreeGraph,
         node_id: str,
-        previous: str | None,
         accent,
     ) -> list:
+        parent = graph.parents.get(node_id)
         animations = [graph.cursor.animate.move_to(graph._node_center(node_id))]
-        if previous is not None:
-            edge = graph.edge_mobs.get((previous, node_id))
+        if parent is not None:
+            edge = graph.edge_mobs.get((parent, node_id))
             if edge is not None:
                 animations.append(
                     edge.animate.set_color(accent).set_stroke(
@@ -775,9 +798,14 @@ class BeamSearchCore(Scene):
         leaf_id: str,
         accent,
         caption: str,
-    ) -> Text:
+        caption_y: float,
+        previous_caption=None,
+    ):
         path = graph.path_to(leaf_id)
         animations = []
+        if previous_caption is not None:
+            animations.append(FadeOut(previous_caption))
+
         for node in path:
             body = graph.node_mobs[node][0]
             animations.append(
@@ -791,10 +819,10 @@ class BeamSearchCore(Scene):
                 edge.animate.set_color(accent).set_stroke(width=max(4.5, 5.5 * graph.scale), opacity=1)
             )
 
-        caption_mob = label(caption, size=24, color=accent)
-        caption_mob.next_to(graph.group, DOWN, buff=0.12)
-        animations.append(FadeIn(caption_mob, shift=UP * 0.06))
-        self.tplay(*animations, run_time=0.95)
+        caption_mob = label(caption, size=22, color=accent)
+        caption_mob.move_to(np.array([graph.shift[0], caption_y, 0.0]))
+        animations.append(FadeIn(caption_mob, shift=UP * 0.04))
+        self.tplay(*animations, run_time=0.90)
         return caption_mob
 
     def soften_tree_path(
@@ -823,12 +851,13 @@ class BeamSearchCore(Scene):
         bfs_order: list[str],
         dfs_solution: str,
         bfs_solution: str,
+        caption_y: float,
         step_time: float = 0.48,
-    ) -> tuple[list, list]:
-        dfs_prev: str | None = None
-        bfs_prev: str | None = None
-        dfs_captions: list = []
-        bfs_captions: list = []
+    ) -> tuple:
+        dfs_caption = None
+        bfs_caption = None
+        dfs_done = False
+        bfs_done = False
         total_steps = max(len(dfs_order), len(bfs_order))
 
         for index in range(total_steps):
@@ -836,23 +865,21 @@ class BeamSearchCore(Scene):
             dfs_leaf: str | None = None
             bfs_leaf: str | None = None
 
-            if index < len(dfs_order):
+            if not dfs_done and index < len(dfs_order):
                 dfs_node = dfs_order[index]
-                animations.extend(
-                    self.visit_tree_node(dfs_graph, dfs_node, dfs_prev, DANGER)
-                )
+                animations.extend(self.visit_tree_node(dfs_graph, dfs_node, DANGER))
                 if dfs_graph.nodes[dfs_node].get("leaf"):
                     dfs_leaf = dfs_node
-                dfs_prev = dfs_node
+                if dfs_node == dfs_solution:
+                    dfs_done = True
 
-            if index < len(bfs_order):
+            if not bfs_done and index < len(bfs_order):
                 bfs_node = bfs_order[index]
-                animations.extend(
-                    self.visit_tree_node(bfs_graph, bfs_node, bfs_prev, KEEP)
-                )
+                animations.extend(self.visit_tree_node(bfs_graph, bfs_node, KEEP))
                 if bfs_graph.nodes[bfs_node].get("leaf"):
                     bfs_leaf = bfs_node
-                bfs_prev = bfs_node
+                if bfs_node == bfs_solution:
+                    bfs_done = True
 
             if animations:
                 self.tplay(AnimationGroup(*animations, lag_ratio=0), run_time=step_time)
@@ -860,45 +887,54 @@ class BeamSearchCore(Scene):
             if dfs_leaf is not None:
                 steps = len(dfs_graph.path_to(dfs_leaf)) - 1
                 if dfs_graph.nodes[dfs_leaf].get("leaf") == "dead":
-                    caption = self.highlight_tree_path(
+                    dfs_caption = self.highlight_tree_path(
                         dfs_graph,
                         dfs_leaf,
                         DANGER,
                         f"{steps} 步 · 死路",
+                        caption_y,
+                        dfs_caption,
                     )
-                    dfs_captions.append(caption)
-                    self.soften_tree_path(dfs_graph, dfs_leaf, DANGER)
+                    if dfs_leaf != dfs_solution:
+                        self.soften_tree_path(dfs_graph, dfs_leaf, DANGER)
                 else:
-                    caption = self.highlight_tree_path(
+                    dfs_caption = self.highlight_tree_path(
                         dfs_graph,
                         dfs_leaf,
                         DANGER,
                         f"{steps} 步 · 首次解法",
+                        caption_y,
+                        dfs_caption,
                     )
-                    dfs_captions.append(caption)
 
             if bfs_leaf is not None:
                 steps = len(bfs_graph.path_to(bfs_leaf)) - 1
                 if bfs_graph.nodes[bfs_leaf].get("leaf") == "dead":
-                    caption = self.highlight_tree_path(
+                    bfs_caption = self.highlight_tree_path(
                         bfs_graph,
                         bfs_leaf,
                         DANGER,
                         f"{steps} 步 · 死路",
+                        caption_y,
+                        bfs_caption,
                     )
-                    bfs_captions.append(caption)
-                    self.soften_tree_path(bfs_graph, bfs_leaf, DANGER)
+                    if bfs_leaf != bfs_solution:
+                        self.soften_tree_path(bfs_graph, bfs_leaf, DANGER)
                 else:
                     suffix = "（最少）" if bfs_leaf == bfs_solution else ""
-                    caption = self.highlight_tree_path(
+                    bfs_caption = self.highlight_tree_path(
                         bfs_graph,
                         bfs_leaf,
                         KEEP,
                         f"{steps} 步 · 首次解法{suffix}",
+                        caption_y,
+                        bfs_caption,
                     )
-                    bfs_captions.append(caption)
 
-        return dfs_captions, bfs_captions
+            if dfs_done and bfs_done:
+                break
+
+        return dfs_caption, bfs_caption
 
     def construct(self):
         background = make_background()
@@ -1035,15 +1071,19 @@ class BeamSearchCore(Scene):
             run_time=0.8,
         )
 
-        title = label("问题解决方案：状态搜索", size=46).to_edge(UP, buff=0.34)
+        title = label("问题解决方案：状态搜索", size=44).to_edge(UP, buff=0.30)
         title_bar = Line(
-            title.get_left() + DOWN * 0.22,
-            title.get_right() + DOWN * 0.22,
+            title.get_left() + DOWN * 0.20,
+            title.get_right() + DOWN * 0.20,
             color=SKY_DEEP,
             stroke_width=5,
         )
-        search_hint = label("每一步移动 → 一个新状态；叶子节点 = 终局解法", size=28, color=MUTED, weight="NORMAL")
-        search_hint.next_to(title, DOWN, buff=0.34)
+        search_hint = label(
+            "每一步移动 → 新状态；叶子 = 解法；左右同步对比 DFS / BFS",
+            size=23,
+            color=MUTED,
+            weight="NORMAL",
+        ).next_to(title_bar, DOWN, buff=0.18)
         self.tplay(
             FadeIn(title, shift=DOWN * 0.16),
             Create(title_bar),
@@ -1052,15 +1092,33 @@ class BeamSearchCore(Scene):
         )
         self.twait(0.30)
 
-        tree_scale = 0.54
-        dfs_graph = SearchTreeGraph(scale=tree_scale, shift=np.array([-3.15, -0.05, 0.0]))
-        bfs_graph = SearchTreeGraph(scale=tree_scale, shift=np.array([3.15, -0.05, 0.0]))
+        tree_scale = 0.50
+        panel_row_y = search_hint.get_bottom()[1] - 0.34
+        panel_titles = VGroup(
+            label("深度优先 DFS", size=28, color=DANGER),
+            label("宽度优先 BFS", size=28, color=KEEP),
+        )
+        panel_titles[0].move_to(np.array([-3.05, panel_row_y, 0.0]))
+        panel_titles[1].move_to(np.array([3.05, panel_row_y, 0.0]))
+
+        root_scene_y = panel_row_y - 0.42
+        shift_y = root_scene_y - SEARCH_TREE_NODES["R"]["pos"][1] * tree_scale
+        dfs_graph = SearchTreeGraph(scale=tree_scale, shift=np.array([-3.05, shift_y, 0.0]))
+        bfs_graph = SearchTreeGraph(scale=tree_scale, shift=np.array([3.05, shift_y, 0.0]))
         dfs_group = dfs_graph.build()
         bfs_group = bfs_graph.build()
-        divider = DashedLine(UP * 2.35, DOWN * 2.55, color=MUTED, dash_length=0.12)
-        panel_titles = VGroup(
-            label("深度优先 DFS", size=30, color=DANGER).move_to(np.array([-3.15, 2.35, 0.0])),
-            label("宽度优先 BFS", size=30, color=KEEP).move_to(np.array([3.15, 2.35, 0.0])),
+        tree_bottom = min(
+            dfs_graph._node_center(node_id)[1]
+            for node_id in dfs_graph.nodes
+        )
+        caption_y = tree_bottom - 0.34
+        divider_top = panel_row_y + 0.22
+        divider_bottom = caption_y + 0.28
+        divider = DashedLine(
+            np.array([0.0, divider_top, 0.0]),
+            np.array([0.0, divider_bottom, 0.0]),
+            color=MUTED,
+            dash_length=0.12,
         )
         self.add(dfs_graph.cursor, bfs_graph.cursor)
         dfs_graph.cursor.set_opacity(1)
@@ -1068,10 +1126,10 @@ class BeamSearchCore(Scene):
         leaf_legend = VGroup(
             make_badge("✓ 解法", KEEP),
             make_badge("× 死路", DANGER),
-        ).arrange(RIGHT, buff=0.42).to_edge(DOWN, buff=0.42)
+        ).arrange(RIGHT, buff=0.42).to_edge(DOWN, buff=0.38)
         self.tplay(
-            Create(divider),
             FadeIn(panel_titles, shift=DOWN * 0.08),
+            Create(divider),
             Create(dfs_group[0]),
             Create(bfs_group[0]),
             LaggedStart(
@@ -1094,20 +1152,19 @@ class BeamSearchCore(Scene):
 
         dfs_graph.cursor.move_to(dfs_graph._node_center("R"))
         bfs_graph.cursor.move_to(bfs_graph._node_center("R"))
-        dual_note = label("同一棵搜索树，两种算法同步逐步展开", size=26, color=MUTED, weight="NORMAL")
-        dual_note.next_to(search_hint, DOWN, buff=0.16)
-        self.tplay(FadeIn(dual_note, shift=UP * 0.06), run_time=0.45)
 
-        dfs_captions, bfs_captions = self.animate_dual_tree_search(
+        dfs_caption, bfs_caption = self.animate_dual_tree_search(
             dfs_graph,
             bfs_graph,
             dfs_order,
             bfs_order,
             dfs_solution,
             bfs_solution,
+            caption_y,
             step_time=0.48,
         )
         self.twait(1.0)
+        fade_extras = [item for item in (dfs_caption, bfs_caption) if item is not None]
         self.tplay(
             FadeOut(dfs_group),
             FadeOut(bfs_group),
@@ -1115,10 +1172,8 @@ class BeamSearchCore(Scene):
             FadeOut(panel_titles),
             FadeOut(dfs_graph.cursor),
             FadeOut(bfs_graph.cursor),
-            FadeOut(dual_note),
             FadeOut(search_hint),
-            FadeOut(*dfs_captions),
-            FadeOut(*bfs_captions),
+            *([FadeOut(item) for item in fade_extras]),
             run_time=0.65,
         )
 
