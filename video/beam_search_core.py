@@ -17,6 +17,8 @@ from manim import (
     FadeIn,
     FadeOut,
     GrowFromCenter,
+    Group,
+    ImageMobject,
     LaggedStart,
     LEFT,
     Line,
@@ -30,6 +32,7 @@ from manim import (
     RoundedRectangle,
     Scene,
     Star,
+    Succession,
     Text,
     UP,
     UR,
@@ -46,7 +49,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from suanniao.model import BoardState, Move, REMOVED  # noqa: E402
 
 
-TARGET_DURATION = 90.0
+TARGET_DURATION = 115.0
 FONT = "Hiragino Sans GB"
 
 SKY = ManimColor("#BDEBFA")
@@ -69,6 +72,94 @@ BIRD_COLORS = (
     ManimColor("#7A5195"),  # purple
 )
 BIRD_LETTERS = ("A", "B", "C", "D")
+
+GAME_BIRD_COLORS = (
+    ManimColor("#F0C83E"),  # yellow
+    ManimColor("#EC8752"),  # orange
+    ManimColor("#EA8FAF"),  # pink
+    ManimColor("#65788E"),  # dark blue
+    ManimColor("#4AA978"),  # green
+    ManimColor("#9A72D0"),  # purple
+    ManimColor("#D4D8DC"),  # white / gray
+)
+GAME_BIRD_LETTERS = tuple("ABCDEFG")
+
+
+GAME_INITIAL_STATE = BoardState(
+    (
+        (3, 4, 5, 5),
+        (2, 1),
+        (0, 3, 6, 4),
+        (0, 2, 5, 0),
+        (1, 4, 2, 5),
+        (6, 4, 5, 5),
+        (5, 3, 1, 0),
+        (2, 2, 2),
+        (5, 4),
+        (4, 3, 4, 1),
+        (0, 4, 6, 1),
+        (1, 4, 6, 4),
+        (6, 0, 2, 4),
+        (1, 3, 0, 1),
+        (6, 5, 5, 4),
+        (2, 6, 5),
+        (3, 6),
+        (3, 0, 3, 5),
+    ),
+    capacity=4,
+)
+
+GAME_SOLUTION_MOVES = tuple(
+    Move(source, destination, count, completes)
+    for source, destination, count, completes in (
+        (14, 8, 1, False),
+        (4, 14, 1, False),
+        (4, 7, 1, True),
+        (8, 4, 2, False),
+        (14, 8, 3, True),
+        (16, 14, 1, False),
+        (10, 1, 1, False),
+        (10, 14, 1, False),
+        (2, 10, 1, False),
+        (2, 14, 1, True),
+        (2, 16, 1, False),
+        (3, 2, 1, False),
+        (6, 2, 1, False),
+        (13, 6, 1, False),
+        (13, 2, 1, True),
+        (13, 16, 1, False),
+        (6, 13, 2, False),
+        (6, 16, 1, True),
+        (9, 13, 1, True),
+        (5, 6, 2, False),
+        (17, 6, 1, True),
+        (9, 5, 1, False),
+        (9, 17, 1, False),
+        (4, 9, 3, True),
+        (1, 4, 2, False),
+        (11, 5, 1, False),
+        (15, 3, 1, False),
+        (11, 15, 1, False),
+        (11, 10, 1, False),
+        (4, 11, 3, True),
+        (5, 4, 3, False),
+        (12, 4, 1, True),
+        (15, 5, 2, False),
+        (1, 15, 1, False),
+        (0, 1, 2, False),
+        (3, 1, 2, True),
+        (3, 15, 1, False),
+        (12, 15, 1, True),
+        (12, 3, 1, False),
+        (5, 12, 3, True),
+        (10, 5, 3, False),
+        (0, 5, 1, True),
+        (17, 0, 2, False),
+        (17, 3, 1, False),
+        (0, 17, 3, True),
+        (3, 10, 3, True),
+    )
+)
 
 
 INITIAL_STATE = BoardState(
@@ -105,6 +196,12 @@ SOLUTION_MOVES = (
 
 
 def validate_story_data() -> None:
+    game_state = GAME_INITIAL_STATE
+    for move in GAME_SOLUTION_MOVES:
+        game_state = game_state.apply(move)
+    if not game_state.is_finished or game_state.removed_count != 16:
+        raise RuntimeError("The game.jpg teaching route must eliminate all sixteen branches")
+
     greedy_state = INITIAL_STATE
     for move in GREEDY_MOVES:
         greedy_state = greedy_state.apply(move)
@@ -123,6 +220,187 @@ validate_story_data()
 
 def label(text: str, size: int = 42, color=INK, weight="SEMIBOLD") -> Text:
     return Text(text, font=FONT, font_size=size, color=color, weight=weight)
+
+
+class GameBirdIcon(VGroup):
+    """Compact A-G token used to simplify the birds detected in game.jpg."""
+
+    def __init__(self, bird_type: int, radius: float = 0.105):
+        super().__init__()
+        color = GAME_BIRD_COLORS[bird_type]
+        body = Circle(
+            radius=radius,
+            fill_color=color,
+            fill_opacity=1,
+            stroke_color=INK,
+            stroke_width=max(0.8, radius * 12),
+        )
+        letter = Text(
+            GAME_BIRD_LETTERS[bird_type],
+            font=FONT,
+            font_size=max(12, int(radius * 96)),
+            color=INK if bird_type in (0, 1, 2, 6) else WHITE,
+            weight="BOLD",
+        ).move_to(body)
+        self.add(body, letter)
+
+
+class GameBoard:
+    """Eighteen-branch teaching board reconstructed from game-solution.html."""
+
+    def __init__(self, state: BoardState, center: np.ndarray = ORIGIN):
+        self.state = state
+        self.center = np.array(center)
+        self.capacity = state.capacity
+        self.positions = self._branch_positions()
+        self.slot_points: list[list[np.ndarray]] = []
+        self.branch_groups: list[VGroup] = []
+        self.birds: list[list[GameBirdIcon]] = []
+        self.group = VGroup()
+
+        for index, (position, branch) in enumerate(zip(self.positions, state.branches)):
+            side = "left" if index < 10 else "right"
+            start = position + (LEFT * 1.12 if side == "left" else RIGHT * 1.12)
+            end = position + (RIGHT * 1.12 if side == "left" else LEFT * 1.12)
+            branch_line = Line(start, end, color=WOOD, stroke_width=4.8)
+            fixed_point = start
+            fixed_cap = Line(
+                fixed_point + DOWN * 0.05,
+                fixed_point + UP * 0.30,
+                color=WOOD,
+                stroke_width=4.8,
+            )
+            branch_group = VGroup(branch_line, fixed_cap)
+
+            fixed_slot = position + (LEFT if side == "left" else RIGHT) * 0.88
+            toward_center = RIGHT if side == "left" else LEFT
+            slots = [fixed_slot + toward_center * 0.57 * slot + UP * 0.16 for slot in range(4)]
+            branch_birds: list[GameBirdIcon] = []
+            if branch == REMOVED:
+                branch_group.set_opacity(0)
+            else:
+                for bird_type, point in zip(branch, slots):
+                    bird = GameBirdIcon(bird_type).move_to(point).set_z_index(2)
+                    branch_birds.append(bird)
+                    self.group.add(bird)
+
+            branch_group.set_z_index(0)
+            self.slot_points.append(slots)
+            self.branch_groups.append(branch_group)
+            self.birds.append(branch_birds)
+            self.group.add(branch_group)
+
+    def _branch_positions(self) -> tuple[np.ndarray, ...]:
+        left_y = np.linspace(2.10, -2.18, 10)
+        right_y = np.linspace(1.62, -2.18, 8)
+        return tuple(
+            [self.center + np.array([-1.66, y, 0.0]) for y in left_y]
+            + [self.center + np.array([1.66, y, 0.0]) for y in right_y]
+        )
+
+    def outer_run(self, branch_index: int) -> list[GameBirdIcon]:
+        branch = self.birds[branch_index]
+        if not branch:
+            return []
+        bird_type = self.state.branches[branch_index][-1]
+        run = 1
+        while run < len(self.state.branches[branch_index]):
+            if self.state.branches[branch_index][-1 - run] != bird_type:
+                break
+            run += 1
+        return branch[-run:]
+
+    def branch_highlight(self, branch_index: int, color, opacity: float = 0.72) -> VGroup:
+        return self.branch_groups[branch_index].copy().set_color(color).set_opacity(opacity).set_z_index(1)
+
+    def move_animation(
+        self,
+        scene: "BeamSearchCore",
+        move: Move,
+        *,
+        move_time: float,
+        completion_time: float,
+        show_highlight: bool = True,
+    ) -> None:
+        moving = self.birds[move.source][-move.count :]
+        destination_start = len(self.birds[move.destination])
+
+        source_glow = self.branch_highlight(move.source, GOLD)
+        destination_glow = self.branch_highlight(move.destination, KEEP)
+        if show_highlight:
+            scene.add(source_glow, destination_glow)
+
+        flights = []
+        for offset, bird in enumerate(moving):
+            target = self.slot_points[move.destination][destination_start + offset]
+            delta_y = target[1] - bird.get_center()[1]
+            angle = -PI / 4 if delta_y >= 0 else PI / 4
+            flights.append(
+                MoveAlongPath(
+                    bird,
+                    ArcBetweenPoints(bird.get_center(), target, angle=angle),
+                    rate_func=ease_in_out_cubic,
+                )
+            )
+
+        fade_glows = []
+        if show_highlight:
+            fade_glows = [
+                source_glow.animate.set_opacity(0),
+                destination_glow.animate.set_opacity(0),
+            ]
+        scene.tplay(
+            AnimationGroup(*flights, lag_ratio=0.04),
+            *fade_glows,
+            run_time=move_time,
+        )
+        if show_highlight:
+            scene.remove(source_glow, destination_glow)
+
+        self.birds[move.source] = self.birds[move.source][: -move.count]
+        self.birds[move.destination].extend(moving)
+        self.state = self.state.apply(move)
+
+        if move.completes_branch:
+            completed = VGroup(
+                self.branch_groups[move.destination],
+                *self.birds[move.destination],
+            )
+            burst_center = self.positions[move.destination] + UP * 0.12
+            bursts = VGroup(
+                *[
+                    Star(
+                        n=5,
+                        outer_radius=0.07,
+                        inner_radius=0.032,
+                        fill_color=GOLD,
+                        fill_opacity=1,
+                        stroke_width=0,
+                    ).move_to(burst_center + direction)
+                    for direction in (UP * 0.34, RIGHT * 0.42, DOWN * 0.30, LEFT * 0.42)
+                ]
+            )
+            scene.tplay(
+                Succession(
+                    LaggedStart(*[GrowFromCenter(star) for star in bursts], lag_ratio=0.05),
+                    FadeOut(bursts, shift=UP * 0.08),
+                    run_time=completion_time,
+                ),
+                completed.animate.scale(1.04).set_opacity(0),
+                run_time=completion_time,
+                rate_func=ease_out_cubic,
+            )
+            scene.remove(completed, bursts)
+
+
+def make_game_legend() -> VGroup:
+    items = VGroup()
+    for bird_type in range(len(GAME_BIRD_LETTERS)):
+        icon = GameBirdIcon(bird_type, radius=0.15)
+        words = label(f"{GAME_BIRD_LETTERS[bird_type]} = 鸟类 {bird_type + 1}", size=19, color=INK)
+        items.add(VGroup(icon, words).arrange(RIGHT, buff=0.13))
+    items.arrange_in_grid(rows=4, cols=2, buff=(0.42, 0.20), flow_order="rd")
+    return items
 
 
 def branch_positions() -> tuple[np.ndarray, ...]:
@@ -337,7 +615,11 @@ class BirdBoard:
             )
             completed = VGroup(self.branch_groups[move.destination], *self.birds[move.destination])
             scene.tplay(
-                LaggedStart(*[GrowFromCenter(star) for star in bursts], lag_ratio=0.08),
+                Succession(
+                    LaggedStart(*[GrowFromCenter(star) for star in bursts], lag_ratio=0.08),
+                    FadeOut(bursts, shift=UP * 0.12),
+                    run_time=completion_time,
+                ),
                 completed.animate.scale(1.06).set_opacity(0),
                 run_time=completion_time,
                 rate_func=ease_out_cubic,
@@ -940,20 +1222,240 @@ class BeamSearchCore(Scene):
         background = make_background()
         self.add(background)
 
+        # Introduce the real game, simplify the screenshot into A-G tokens,
+        # explain the legal-move rules on the first move, then replay the
+        # verified elimination sequence from docs/game-solution.html.
+        intro_title = label("鸟类消除游戏怎么玩？", size=48).to_edge(UP, buff=0.30)
+        intro_subtitle = label("以 game.jpg 的第 4 关为例", size=25, color=MUTED, weight="NORMAL")
+        intro_subtitle.next_to(intro_title, DOWN, buff=0.20)
+        self.tplay(
+            FadeIn(intro_title, shift=DOWN * 0.14),
+            FadeIn(intro_subtitle, shift=UP * 0.08),
+            run_time=0.85,
+        )
+
+        screenshot = ImageMobject(str(PROJECT_ROOT / "game.jpg"))
+        screenshot.height = 5.35
+        screenshot.move_to(np.array([-4.55, -0.25, 0.0]))
+        screenshot_frame = RoundedRectangle(
+            width=screenshot.width + 0.16,
+            height=screenshot.height + 0.16,
+            corner_radius=0.18,
+            fill_color=WHITE,
+            fill_opacity=0.72,
+            stroke_color=WHITE,
+            stroke_width=3,
+        ).move_to(screenshot)
+        screenshot_label = make_badge("游戏实图", INK).scale(0.72)
+        screenshot_label.next_to(screenshot_frame, DOWN, buff=0.12)
+
+        legend = make_game_legend()
+        legend_heading = label("不同的鸟 → A–G", size=34, color=KEEP)
+        legend_group = VGroup(legend_heading, legend).arrange(DOWN, buff=0.42)
+        legend_panel = RoundedRectangle(
+            width=legend_group.width + 0.70,
+            height=legend_group.height + 0.62,
+            corner_radius=0.28,
+            fill_color=CARD,
+            fill_opacity=0.93,
+            stroke_color=CARD_BORDER,
+            stroke_width=2.5,
+        )
+        legend_card = VGroup(legend_panel, legend_group).move_to(np.array([2.10, -0.10, 0.0]))
+        self.tplay(
+            FadeIn(Group(screenshot_frame, screenshot), shift=RIGHT * 0.18),
+            FadeIn(screenshot_label, shift=UP * 0.06),
+            FadeIn(legend_card, shift=LEFT * 0.18),
+            run_time=1.15,
+        )
+        self.twait(0.75)
+
+        game_board = GameBoard(GAME_INITIAL_STATE, center=np.array([2.10, -0.25, 0.0]))
+        simplify_title = label("用字母代表鸟类，得到简化棋盘", size=43, color=KEEP).to_edge(
+            UP, buff=0.30
+        )
+        simplify_arrow = Arrow(
+            screenshot_frame.get_right() + RIGHT * 0.10,
+            game_board.group.get_left() + LEFT * 0.12,
+            buff=0.04,
+            color=KEEP,
+            stroke_width=4,
+            tip_length=0.18,
+        )
+        self.tplay(
+            ReplacementTransform(intro_title, simplify_title),
+            FadeOut(intro_subtitle),
+            FadeOut(legend_card, shift=RIGHT * 0.12),
+            FadeIn(game_board.group, shift=LEFT * 0.12),
+            Create(simplify_arrow),
+            run_time=1.30,
+        )
+        self.twait(0.65)
+
+        rules_title = label("第一步，先看移动规则", size=32, color=INK)
+        gameplay_title = label("实际消除过程", size=46, color=KEEP).to_edge(UP, buff=0.32)
+        rule_lines = VGroup(
+            label("① 只移动树枝外侧连续同类的鸟", size=22, color=INK),
+            label("② 目标树枝外侧必须同类，或者为空", size=22, color=INK),
+            label("③ 目标树枝还要有足够的空位", size=22, color=INK),
+            label("④ 同一树枝集齐 4 只同类鸟，自动消除", size=22, color=KEEP),
+        ).arrange(DOWN, aligned_edge=LEFT, buff=0.34)
+        rules_content = VGroup(rules_title, rule_lines).arrange(DOWN, aligned_edge=LEFT, buff=0.46)
+        rules_panel = RoundedRectangle(
+            width=rules_content.width + 0.64,
+            height=rules_content.height + 0.62,
+            corner_radius=0.24,
+            fill_color=WHITE,
+            fill_opacity=0.91,
+            stroke_color=CARD_BORDER,
+            stroke_width=2.4,
+        )
+        rules_card = VGroup(rules_panel, rules_content).move_to(np.array([-3.95, -0.10, 0.0]))
+
+        first_move = GAME_SOLUTION_MOVES[0]
+        source_outer = VGroup(*game_board.outer_run(first_move.source))
+        source_box = RoundedRectangle(
+            width=source_outer.width + 0.14,
+            height=source_outer.height + 0.13,
+            corner_radius=0.11,
+            stroke_color=GOLD,
+            stroke_width=3.5,
+            fill_opacity=0,
+        ).move_to(source_outer)
+        destination_outer = game_board.birds[first_move.destination][-1]
+        destination_box = RoundedRectangle(
+            width=destination_outer.width + 0.14,
+            height=destination_outer.height + 0.13,
+            corner_radius=0.11,
+            stroke_color=KEEP,
+            stroke_width=3.5,
+            fill_opacity=0,
+        ).move_to(destination_outer)
+        destination_empty_slots = VGroup(
+            *[
+                Circle(
+                    radius=0.105,
+                    stroke_color=KEEP,
+                    stroke_width=2.2,
+                    fill_opacity=0,
+                ).move_to(game_board.slot_points[first_move.destination][slot])
+                for slot in range(len(game_board.birds[first_move.destination]), game_board.capacity)
+            ]
+        )
+        first_source_glow = game_board.branch_highlight(first_move.source, GOLD)
+        first_destination_glow = game_board.branch_highlight(first_move.destination, KEEP)
+
+        self.tplay(
+            FadeOut(Group(screenshot_frame, screenshot)),
+            FadeOut(screenshot_label),
+            FadeOut(simplify_arrow),
+            ReplacementTransform(simplify_title, gameplay_title),
+            FadeIn(rules_panel, shift=RIGHT * 0.10),
+            FadeIn(rules_title, shift=RIGHT * 0.10),
+            FadeIn(rule_lines[0], shift=RIGHT * 0.10),
+            Create(source_box),
+            FadeIn(first_source_glow),
+            run_time=0.90,
+        )
+        self.tplay(
+            FadeIn(rule_lines[1], shift=RIGHT * 0.10),
+            Create(destination_box),
+            FadeIn(first_destination_glow),
+            run_time=0.65,
+        )
+        self.tplay(
+            FadeIn(rule_lines[2], shift=RIGHT * 0.10),
+            Create(destination_empty_slots),
+            run_time=0.60,
+        )
+        self.tplay(FadeIn(rule_lines[3], shift=RIGHT * 0.10), run_time=0.55)
+        self.twait(0.45)
+
+        first_move_caption = make_badge("第 1 步：外侧 E 移到外侧 E", KEEP).scale(0.72)
+        first_move_caption.next_to(rules_panel, DOWN, buff=0.20)
+        self.tplay(FadeIn(first_move_caption, shift=UP * 0.06), run_time=0.35)
+        self.remove(first_source_glow, first_destination_glow)
+        game_board.move_animation(
+            self,
+            first_move,
+            move_time=1.10,
+            completion_time=0.35,
+            show_highlight=True,
+        )
+        self.tplay(
+            FadeOut(source_box),
+            FadeOut(destination_box),
+            FadeOut(destination_empty_slots),
+            FadeOut(first_move_caption),
+            run_time=0.35,
+        )
+
+        fast_title = label("规则明确，后续移动加速播放", size=30, color=KEEP)
+        fast_title.move_to(rules_title)
+        eliminated_count = 0
+        eliminated_label = make_badge("0 / 16 组已消除", KEEP).scale(0.72)
+        eliminated_label.next_to(rules_panel, DOWN, buff=0.20)
+        self.tplay(
+            ReplacementTransform(rules_title, fast_title),
+            FadeIn(eliminated_label, shift=UP * 0.06),
+            run_time=0.45,
+        )
+
+        first_elimination_shown = False
+        for move in GAME_SOLUTION_MOVES[1:]:
+            game_board.move_animation(
+                self,
+                move,
+                move_time=0.13,
+                completion_time=0.11,
+                show_highlight=False,
+            )
+            if move.completes_branch:
+                eliminated_count += 1
+                next_label = make_badge(f"{eliminated_count} / 16 组已消除", KEEP).scale(0.72)
+                next_label.move_to(eliminated_label)
+                self.tplay(ReplacementTransform(eliminated_label, next_label), run_time=0.08)
+                eliminated_label = next_label
+                if not first_elimination_shown:
+                    elimination_tip = make_badge("集齐 4 只同类鸟 → 这根树枝消除", GOLD).scale(0.72)
+                    elimination_tip.next_to(eliminated_label, DOWN, buff=0.16)
+                    self.tplay(FadeIn(elimination_tip, shift=UP * 0.05), run_time=0.25)
+                    self.twait(0.35)
+                    self.tplay(FadeOut(elimination_tip), run_time=0.18)
+                    first_elimination_shown = True
+
+        game_complete = label("鸟类全部消除，游戏完成！", size=52, color=KEEP)
+        complete_panel = RoundedRectangle(
+            width=game_complete.width + 0.90,
+            height=game_complete.height + 0.55,
+            corner_radius=0.30,
+            fill_color=WHITE,
+            fill_opacity=0.94,
+            stroke_color=KEEP,
+            stroke_width=3.5,
+        )
+        complete_group = VGroup(complete_panel, game_complete)
+        self.tplay(
+            FadeOut(game_board.group, scale=0.96),
+            FadeOut(rules_panel),
+            FadeOut(rule_lines),
+            FadeOut(fast_title),
+            FadeOut(eliminated_label),
+            FadeOut(gameplay_title),
+            GrowFromCenter(complete_group),
+            run_time=0.95,
+            rate_func=ease_out_back,
+        )
+        self.twait(0.85)
+        self.tplay(FadeOut(complete_group), run_time=0.55)
+
         # First explain how the bird puzzle becomes a stack-search problem.
         model_title = label("鸟类消除游戏，如何建模？", size=48).to_edge(UP, buff=0.34)
-        model_bar = Line(
-            model_title.get_left() + DOWN * 0.22,
-            model_title.get_right() + DOWN * 0.22,
-            color=SKY_DEEP,
-            stroke_width=5,
-        )
         model_hint = label("树枝  →  栈", size=34, color=KEEP).next_to(
             model_title, DOWN, buff=0.38
         )
         self.tplay(
             FadeIn(model_title, shift=DOWN * 0.16),
-            Create(model_bar),
             FadeIn(model_hint, shift=UP * 0.10),
             run_time=1.0,
         )
@@ -1064,7 +1566,6 @@ class BeamSearchCore(Scene):
         self.twait(1.0)
         self.tplay(
             FadeOut(model_title),
-            FadeOut(model_bar),
             FadeOut(goal_title),
             FadeOut(goal_diagram),
             FadeOut(goal_marks),
@@ -1072,21 +1573,14 @@ class BeamSearchCore(Scene):
         )
 
         title = label("问题解决方案：状态搜索", size=44).to_edge(UP, buff=0.30)
-        title_bar = Line(
-            title.get_left() + DOWN * 0.20,
-            title.get_right() + DOWN * 0.20,
-            color=SKY_DEEP,
-            stroke_width=5,
-        )
         search_hint = label(
             "每一步移动 → 新状态；叶子 = 解法；左右同步对比 DFS / BFS",
             size=23,
             color=MUTED,
             weight="NORMAL",
-        ).next_to(title_bar, DOWN, buff=0.18)
+        ).next_to(title, DOWN, buff=0.38)
         self.tplay(
             FadeIn(title, shift=DOWN * 0.16),
-            Create(title_bar),
             FadeIn(search_hint, shift=UP * 0.08),
             run_time=1.0,
         )
@@ -1178,12 +1672,6 @@ class BeamSearchCore(Scene):
         )
 
         timer_title = label("游戏有时间限制", size=46, color=DANGER).to_edge(UP, buff=0.34)
-        timer_bar = Line(
-            timer_title.get_left() + DOWN * 0.22,
-            timer_title.get_right() + DOWN * 0.22,
-            color=DANGER,
-            stroke_width=5,
-        )
         timer_frame = RoundedRectangle(
             width=4.8,
             height=0.62,
@@ -1213,7 +1701,6 @@ class BeamSearchCore(Scene):
         ).move_to(bfs_choice)
         self.tplay(
             ReplacementTransform(title, timer_title),
-            ReplacementTransform(title_bar, timer_bar),
             FadeIn(timer_frame),
             FadeIn(timer_fill, shift=RIGHT * 0.12),
             FadeIn(timer_words, shift=UP * 0.10),
@@ -1232,12 +1719,6 @@ class BeamSearchCore(Scene):
         )
 
         prune_title = label("实现加速：重复分支剪枝", size=44).to_edge(UP, buff=0.34)
-        prune_bar = Line(
-            prune_title.get_left() + DOWN * 0.22,
-            prune_title.get_right() + DOWN * 0.22,
-            color=GOLD,
-            stroke_width=5,
-        )
         pruning_demo = make_pruning_demo()
         prune_note = label(
             "生成后继时：if key in seen: continue",
@@ -1247,7 +1728,6 @@ class BeamSearchCore(Scene):
         ).to_edge(DOWN, buff=0.42)
         self.tplay(
             ReplacementTransform(timer_title, prune_title),
-            ReplacementTransform(timer_bar, prune_bar),
             LaggedStart(*[FadeIn(item, shift=UP * 0.10) for item in pruning_demo], lag_ratio=0.12),
             run_time=1.35,
         )
@@ -1262,21 +1742,13 @@ class BeamSearchCore(Scene):
         beam_title = label("进一步：Beam Search 平衡速度与搜索空间", size=40, color=KEEP).to_edge(
             UP, buff=0.34
         )
-        beam_bar = Line(
-            beam_title.get_left() + DOWN * 0.22,
-            beam_title.get_right() + DOWN * 0.22,
-            color=KEEP,
-            stroke_width=5,
-        )
         beam_badge = make_badge("BFS + 束宽 3", KEEP).to_corner(UR, buff=0.42)
         self.tplay(
             ReplacementTransform(prune_title, beam_title),
-            ReplacementTransform(prune_bar, beam_bar),
             FadeIn(beam_badge, shift=LEFT * 0.18),
             run_time=0.75,
         )
         title = beam_title
-        title_bar = beam_bar
         self.twait(0.35)
 
         # Show the first expansion as four concrete candidate states.
@@ -1441,12 +1913,6 @@ class BeamSearchCore(Scene):
 
         # Return to the full board and play the verified twelve-move solution.
         route_title = label("找到能走通的路线", size=48, color=KEEP).to_edge(UP, buff=0.34)
-        route_bar = Line(
-            route_title.get_left() + DOWN * 0.22,
-            route_title.get_right() + DOWN * 0.22,
-            color=KEEP,
-            stroke_width=5,
-        )
         solution_board = BirdBoard(INITIAL_STATE)
         tree_group = VGroup(
             top_cards,
@@ -1460,12 +1926,10 @@ class BeamSearchCore(Scene):
         self.tplay(
             FadeOut(tree_group),
             ReplacementTransform(title, route_title),
-            ReplacementTransform(title_bar, route_bar),
             FadeIn(solution_board.group, scale=0.86),
             run_time=1.55,
         )
         title = route_title
-        title_bar = route_bar
         self.twait(0.45)
 
         for move in SOLUTION_MOVES:
@@ -1508,15 +1972,11 @@ class BeamSearchCore(Scene):
             rate_func=ease_out_back,
         )
         self.twait(1.05)
+        self.tplay(FadeOut(confetti, shift=UP * 0.12), run_time=0.35)
+        self.remove(confetti)
 
         # End with the algorithm stack summary.
         comparison_title = label("求解策略组合", size=48).to_edge(UP, buff=0.34)
-        comparison_bar = Line(
-            comparison_title.get_left() + DOWN * 0.22,
-            comparison_title.get_right() + DOWN * 0.22,
-            color=SKY_DEEP,
-            stroke_width=5,
-        )
         comparisons = VGroup(
             comparison_card("BFS", "最少步数保证", KEEP, 3, True),
             comparison_card("剪枝", "跳过重复状态", GOLD, 2, True),
@@ -1525,10 +1985,8 @@ class BeamSearchCore(Scene):
         self.tplay(
             FadeOut(solution_board.group),
             FadeOut(solved_group),
-            FadeOut(confetti),
             FadeOut(repeat_phase),
             ReplacementTransform(title, comparison_title),
-            ReplacementTransform(title_bar, comparison_bar),
             LaggedStart(*[FadeIn(card, shift=UP * 0.18) for card in comparisons], lag_ratio=0.14),
             run_time=1.6,
         )
@@ -1547,7 +2005,6 @@ class BeamSearchCore(Scene):
         self.tplay(
             FadeOut(comparisons),
             FadeOut(comparison_title),
-            FadeOut(comparison_bar),
             FadeIn(final_words, shift=UP * 0.18),
             Create(final_line),
             run_time=1.0,

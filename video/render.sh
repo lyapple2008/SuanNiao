@@ -22,7 +22,7 @@ fi
 
 ffmpeg -y -v warning \
   -i "$RAW_OUTPUT" \
-  -t 90.000 \
+  -t 115.000 \
   -an \
   -c:v libx264 \
   -preset medium \
