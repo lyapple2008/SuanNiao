@@ -15,3 +15,9 @@ media/
 .agents/
 .claude/
 hyperframes/
+runtime/
+.workbuddy/
+video/
+videos/
+skills-lock.json
+.DS_Store
