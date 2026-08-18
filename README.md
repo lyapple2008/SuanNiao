@@ -277,7 +277,9 @@ flowchart LR
 - 录屏播放完成后冻结最终画面，并在顶层播放撒花动画。
 
 完整演示视频：
-![总是超时？我用算法自动通关了鸟类消除游戏](https://youtu.be/SfIWxNGCC70)
+
+[![Watch the video](https://img.youtube.com/vi/SfIWxNGCC70/maxresdefault.jpg)](https://youtu.be/SfIWxNGCC70)
+
 
 相关代码：
 
